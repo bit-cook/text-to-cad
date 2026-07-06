@@ -49,6 +49,7 @@ python scripts/gen ...       # render GLB/topology packages from gen_step() Pyth
 python scripts/export ...    # STEP/STL/3MF/GLB files from Python sources or imported STEP
 python scripts/inspect ...   # refs, measure, align, frame, diff
 python scripts/snapshot ...  # PNG/GIF visual review packets
+python scripts/artifact ...  # debug one on-demand render-package build (imported STEP)
 ```
 
 Use the active project Python interpreter; treat `python` in examples as an interpreter placeholder. Use `python scripts/<tool> --help` for the complete current command interface; reference docs show recommended workflows, not every flag.

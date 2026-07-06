@@ -7,6 +7,9 @@ from pathlib import Path
 from cadgen.catalog import StepImportOptions
 from cadgen.metadata import normalize_mesh_numeric
 
+# Sentinel for --write-step without a path: write each target's sibling <name>.step.
+DEFAULT_STEP_OUTPUT = "__default_sibling_step__"
+
 
 def generate_step_targets(*args, **kwargs):
     from cadgen.generation import generate_step_targets as generate
@@ -27,6 +30,18 @@ def _add_gen_arguments(parser: argparse.ArgumentParser) -> None:
         "targets",
         nargs="+",
         help="Explicit gen_step() Python generator source(s) to build.",
+    )
+    parser.add_argument(
+        "--write-step",
+        nargs="?",
+        const=DEFAULT_STEP_OUTPUT,
+        metavar="OUTPUT",
+        help=(
+            "Also write the .step file during generation. Without a path, each target "
+            "writes its sibling <name>.step; an explicit path requires exactly one target "
+            "and resolves from the command cwd. scripts/export --step is the equivalent "
+            "standalone export."
+        ),
     )
     parser.add_argument(
         "--force",
@@ -55,8 +70,8 @@ def _validate_python_targets(targets: Sequence[str], *, parser: argparse.Argumen
         target_text = str(target)
         if "=" in target_text:
             parser.error(
-                "SOURCE=OUTPUT pairs are no longer supported; scripts/gen builds render "
-                "packages only. Use scripts/export for STEP/STL/3MF/GLB files."
+                "SOURCE=OUTPUT pairs are no longer supported. Use --write-step to also "
+                "write the .step file, or scripts/export for STEP/STL/3MF/GLB files."
             )
         suffix = Path(target_text).suffix.lower()
         if suffix in {".step", ".stp"}:
@@ -67,6 +82,30 @@ def _validate_python_targets(targets: Sequence[str], *, parser: argparse.Argumen
             )
         if suffix != ".py":
             parser.error(f"scripts/gen target must be a gen_step() Python source: {target_text}")
+
+
+def _sibling_step_output(target: str) -> str:
+    # foo.step.py -> foo.step; plain foo.py -> foo.step (the target's logical STEP).
+    if target.lower().endswith(".step.py"):
+        return target[: -len(".py")]
+    return str(Path(target).with_suffix(".step"))
+
+
+def _targets_with_step_outputs(
+    targets: Sequence[str],
+    write_step: str | None,
+    *,
+    parser: argparse.ArgumentParser,
+) -> list[str]:
+    """Translate --write-step into the SOURCE=OUTPUT pair targets that
+    cadgen.generation already resolves per target."""
+    if write_step is None:
+        return list(targets)
+    if write_step == DEFAULT_STEP_OUTPUT:
+        return [f"{target}={_sibling_step_output(target)}" for target in targets]
+    if len(targets) != 1:
+        parser.error("--write-step with an explicit path requires exactly one target")
+    return [f"{targets[0]}={write_step}"]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -98,7 +137,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     return generate_step_targets(
-        args.targets,
+        _targets_with_step_outputs(args.targets, args.write_step, parser=parser),
         step_options=step_options,
         force=bool(args.force),
         verbose=bool(args.verbose),

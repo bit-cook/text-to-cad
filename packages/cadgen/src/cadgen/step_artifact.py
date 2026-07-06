@@ -235,6 +235,7 @@ def build_step_artifact(
     mesh_tolerance: float | None = None,
     mesh_angular_tolerance: float | None = None,
     reset_runtime_closure: bool = False,
+    verbose: bool = False,
     logger: CliLogger | None = None,
 ) -> dict[str, object]:
     """Build the GLB/topology artifact for one STEP/.step.py and RETURN the result
@@ -278,7 +279,7 @@ def build_step_artifact(
         raise ValueError(f"Expected a STEP/STP file: {step_path}")
 
     if logger is None:
-        logger = CliLogger("step-artifact", verbose=False)
+        logger = CliLogger("step-artifact", verbose=verbose)
     mesh_tolerance = normalize_mesh_numeric(mesh_tolerance, field_name="mesh_tolerance")
     mesh_angular_tolerance = normalize_mesh_numeric(mesh_angular_tolerance, field_name="mesh_angular_tolerance")
     if from_generator:
@@ -332,7 +333,7 @@ def build_step_artifact(
     else:
         with logger.timed(f"load STEP {relative_to_cwd(step_path)}"):
             scene = load_step_scene(step_path)
-        kind_value = kind or _infer_entry_kind(step_path, scene)
+        kind_value = kind or infer_entry_kind(step_path, scene)
         spec = _build_entry_spec(
             repo_root,
             step_path,

@@ -13,7 +13,7 @@ python scripts/export target [flags]      # write STEP/STL/3MF/GLB files (see su
 
 `scripts/gen` accepts gen_step() Python generator sources only. Use explicit target paths only; target paths resolve from the command cwd unless absolute. Do not rely on directory-wide generation.
 
-Building a generator writes its hidden render package (GLB/topology artifacts) beside the source; it writes no `.step` file. A `.step` file is an export: produce it on demand with `scripts/export <name>.step.py --step`, which serializes the same `gen_step()` geometry. Do not put output paths in the `gen_step()` return value; the export CLI owns output paths.
+Building a generator writes its hidden render package (GLB/topology artifacts) beside the source; it writes no `.step` file by default. A `.step` file is an export: produce it with `scripts/export <name>.step.py --step`, or write it in the same generation run with `scripts/gen <name>.step.py --write-step` (bare `--write-step` writes each target's sibling `<name>.step`; an explicit path requires exactly one target and resolves from the command cwd). Do not put output paths in the `gen_step()` return value; the CLI flags own output paths.
 
 ## Generated vs imported STEP
 
@@ -73,6 +73,12 @@ Passing a generated assembly's exported `.step` to a tool treats it as imported 
 An imported STEP/STP file (downloaded or authored elsewhere, no generator) needs no build command. Its GLB/topology render artifacts are generated on demand from the STEP file itself by the tools that consume them — `scripts/inspect`, `scripts/snapshot`, and the CAD Viewer — and its part/assembly kind is inferred from embedded metadata or the STEP product hierarchy.
 
 To produce STL/3MF/native GLB files from an imported STEP, pass it directly to `scripts/export`; read `supported-exports.md`.
+
+To debug or pre-run the on-demand render-package build itself, `scripts/artifact` runs exactly one build for an imported STEP/STP file (or a generator source) and prints the result payload:
+
+```bash
+python scripts/artifact path/to/imported.step [--kind part|assembly] [--force]
+```
 
 ## Viewer artifacts
 

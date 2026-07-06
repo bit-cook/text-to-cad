@@ -31,7 +31,7 @@ When a generator exists, export from the generator. Pass an imported STEP/STP fi
 python scripts/export path/to/imported.step --stl --3mf
 ```
 
-A text STEP file is itself an export: `scripts/gen` builds only the hidden render package, so use `--step` to write the `.step` file when the user needs one.
+A text STEP file is itself an export: `scripts/gen` builds only the hidden render package by default, so use `--step` here (or `scripts/gen --write-step` during generation) to write the `.step` file when the user needs one.
 
 ## Mesh tolerance
 
