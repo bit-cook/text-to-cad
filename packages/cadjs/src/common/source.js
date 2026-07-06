@@ -2,6 +2,8 @@ import {
   buildComposedPackageMeshData
 } from "../lib/assembly/meshData.js";
 import { buildMeshDataFromGlbBuffer } from "../lib/render/glbMeshData.js";
+import { buildMeshDataFromStlBuffer } from "../lib/render/stlMeshData.js";
+import { buildMeshDataFrom3MfBuffer } from "../lib/render/threeMfMeshData.js";
 import {
   loadRenderDisplayEdgeBundle,
   loadRenderGlb,
@@ -69,7 +71,10 @@ export function sourceIsStep(sourceOrKind) {
 }
 
 function assertStepOnlyOption(kind, value, label) {
-  if (value === undefined || value === null) {
+  // An empty value means the option was not provided (stepParameterUrl defaults to
+  // the empty string), so there is nothing step-only to reject — required for direct
+  // non-STEP mesh sources, which reach loadSource with no step parameters at all.
+  if (value === undefined || value === null || value === "") {
     return;
   }
   if (!sourceIsStep(kind)) {
@@ -140,6 +145,20 @@ async function loadMeshDataFromUrl(url, kind) {
       throw new Error(`Failed to load GLB source: HTTP ${response.status}`);
     }
     return buildMeshDataFromGlbBuffer(await response.arrayBuffer());
+  }
+  if (kind === SOURCE_KIND.STL) {
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`Failed to load STL source: HTTP ${response.status}`);
+    }
+    return buildMeshDataFromStlBuffer(await response.arrayBuffer());
+  }
+  if (kind === SOURCE_KIND.THREE_MF) {
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`Failed to load 3MF source: HTTP ${response.status}`);
+    }
+    return buildMeshDataFrom3MfBuffer(await response.arrayBuffer());
   }
   throw new Error(`Unsupported render source kind: ${kind || SOURCE_KIND.UNKNOWN}`);
 }

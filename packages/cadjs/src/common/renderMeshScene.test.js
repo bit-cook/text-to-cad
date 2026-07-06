@@ -70,6 +70,8 @@ test("renderMeshJob list capture uses buildModel selection", async () => {
   assert.equal(result.ok, true);
   assert.equal(result.mode, "list");
   assert.deepEqual(result.parts.map((part) => part.id), ["right"]);
+  // Each part carries a paste-ready selector ref (#<occurrenceId>) for --focus/--hide.
+  assert.deepEqual(result.parts.map((part) => part.ref), ["#right"]);
   assert.deepEqual(result.bounds, {
     min: [2, 0, 0],
     max: [3, 1, 0]

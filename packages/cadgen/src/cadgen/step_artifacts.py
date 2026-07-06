@@ -42,7 +42,6 @@ def ensure_step_topology_artifact(
     logger: CliLogger | None = None,
     mesh_tolerance: float | None = None,
     mesh_angular_tolerance: float | None = None,
-    owner: str = "cadgen-step-artifact",
     debug: dict[str, object] | None = None,
 ) -> StepTopologyArtifact:
     """Resolve (building/regenerating if needed) the render/topology artifact for `target`.
@@ -461,14 +460,10 @@ def _python_source_for_target(target: ResolvedStepTarget) -> Path | None:
     if source_is_generator:
         return target.source_path
     # The generator for `<name>.step` is `<name>.step.py` (append `.py` to the
-    # full filename) under the entry convention; fall back to the legacy
-    # `<name>.py` sibling for pre-rename layouts.
-    for candidate in (
-        target.step_path.with_name(target.step_path.name + ".py"),
-        target.step_path.with_suffix(".py"),
-    ):
-        if candidate.is_file():
-            return candidate
+    # full filename) under the entry convention.
+    candidate = target.step_path.with_name(target.step_path.name + ".py")
+    if candidate.is_file():
+        return candidate
     return None
 
 

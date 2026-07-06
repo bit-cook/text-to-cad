@@ -53,6 +53,12 @@ DEFAULT_RENDER_THEME_ID = "workbench"
 DEFAULT_TIMEOUT_SECONDS = 300
 RENDER_BROWSER_STARTUP_TIMEOUT_MS = 15_000
 SUPPORTED_RENDER_MODES = {"view", "orbit", "section", "list"}
+# Direct mesh inputs (no STEP topology). These render through the shared mesh path but
+# cannot use STEP-only modes/params: section (CAD sectioning), selector focus/hide,
+# stepParameters, exploded assembly views, or CAD-edge display modes.
+MESH_INPUT_KINDS = {"glb", "stl", "3mf"}
+MESH_SUPPORTED_RENDER_MODES = {"view", "orbit", "list"}
+TOPOLOGY_DISPLAY_MODES = {"hidden_edges", "hidden_lines_removed"}
 WORKBENCH_RENDER_THEME_IDS = {DEFAULT_RENDER_THEME_ID}
 
 SIMPLE_RENDER_WIDTH = 1200
@@ -164,7 +170,7 @@ def help_text() -> str:
   python scripts/snapshot --job -
   python scripts/snapshot --input models/part.step --output /tmp/part.png --appearance workbench
 
-Shortcut flags are for common STEP/STP snapshots. --job accepts one render job, an array of render jobs, or { "jobs": [...] }. Every job input must be a relative or absolute .step/.stp path, or a same-stem Python generator; direct GLB/STL/3MF/DXF/G-code/robot-description inputs are unsupported. The default appearance is the workbench saved theme. --appearance accepts a saved theme name, an inline JSON appearance settings object, or a JSON appearance settings file path. --display accepts solid, rendered, transparent, hidden_edges, hidden_lines_removed, unshaded, wireframe, an inline JSON display settings object, or a JSON display settings file path. Projection is a theme trait taken from the appearance (the default workbench/light theme is orthographic; the presentation stage themes are perspective); pass {"projection":"perspective"} in display JSON only to override it for a one-off. Exploded view and edge styling belong in display JSON. The exploded view is an ordered step document: {"mode":"rendered","exploded":{"enabled":true,"amount":1,"steps":[{"type":"translate","targets":["o1.2"],"axis":[0,0,1],"distance":40}]},"edges":{"color":"#132232"}} moves the o1.2 subtree 40mm up. Steps may be "translate" (axis+distance), "rotate" (axis+origin+angleDeg), or "radial" (axis+center+distance); "targets" are occurrence-path prefixes; "amount" is the 0..1 scrub. Omit "steps" to auto-generate from hints: {"exploded":{"enabled":true,"auto":{"mode":"auto","gapScale":1.4,"depth":1}}} where mode is auto|x|y|z|radial. --camera accepts a preset, azimuth:elevation pair, or JSON object with preset, position, target, up, and zoom fields. --focus and --hide accept one or more selector refs such as #o1.2 for parts or subassemblies; pass the flag repeatedly or list refs after the flag. Option JSON is direct settings JSON, not a wrapped job fragment. Full JSON jobs use top-level appearance and display. Use --view-labels to burn the camera/view label into shortcut outputs. Use --params with STEP parameter sidecar JSON values, and --size-profile for default dimensions such as simple, diagnostic, labeled, assembly, presentation, orbit, or contact-sheet. Output file names are saved with a shared UTC seconds timestamp before the extension. Use --debug (or a job-level "debug": true field) to add a "debug" section to --json output reporting how each STEP/STP artifact was resolved: source ("generated" from a .step.py generator vs. "imported" direct STEP), whether it was an assembly, whether it was served from cache or rebuilt, whether assembly selectors were re-extracted, and how long artifact resolution took. Everyday snapshot usage does not need --debug; it exists for diagnosing slow or unexpected renders.
+Shortcut flags are for common STEP/STP snapshots. --job accepts one render job, an array of render jobs, or { "jobs": [...] }. Every job input must be a relative or absolute .step/.stp path, a same-stem Python generator, or a direct .glb/.stl/.3mf mesh; direct DXF/G-code/robot-description inputs are unsupported. Mesh inputs render shaded through the shared mesh path and support camera, appearance, size-profile, orbit, and list output, but reject STEP-only options: --params/stepParameters, --focus/--hide selector refs, exploded and hidden_edges/hidden_lines_removed display, and section mode. The default appearance is the workbench saved theme. --appearance accepts a saved theme name, an inline JSON appearance settings object, or a JSON appearance settings file path. --display accepts solid, rendered, transparent, hidden_edges, hidden_lines_removed, unshaded, wireframe, an inline JSON display settings object, or a JSON display settings file path. Projection is a theme trait taken from the appearance (the default workbench/light theme is orthographic; the presentation stage themes are perspective); pass {"projection":"perspective"} in display JSON only to override it for a one-off. Exploded view and edge styling belong in display JSON. The exploded view is an ordered step document: {"mode":"rendered","exploded":{"enabled":true,"amount":1,"steps":[{"type":"translate","targets":["o1.2"],"axis":[0,0,1],"distance":40}]},"edges":{"color":"#132232"}} moves the o1.2 subtree 40mm up. Steps may be "translate" (axis+distance), "rotate" (axis+origin+angleDeg), or "radial" (axis+center+distance); "targets" are occurrence-path prefixes; "amount" is the 0..1 scrub. Omit "steps" to auto-generate from hints: {"exploded":{"enabled":true,"auto":{"mode":"auto","gapScale":1.4,"depth":1}}} where mode is auto|x|y|z|radial. --camera accepts a preset, azimuth:elevation pair, or JSON object with preset, position, target, up, and zoom fields. --focus and --hide accept one or more selector refs such as #o1.2 for parts or subassemblies; pass the flag repeatedly or list refs after the flag. Option JSON is direct settings JSON, not a wrapped job fragment. Full JSON jobs use top-level appearance and display. Use --view-labels to burn the camera/view label into shortcut outputs. Use --params with STEP parameter sidecar JSON values, and --size-profile for default dimensions such as simple, diagnostic, labeled, assembly, presentation, orbit, or contact-sheet. Output file names are saved with a shared UTC seconds timestamp before the extension. Use --debug (or a job-level "debug": true field) to add a "debug" section to --json output reporting how each STEP/STP artifact was resolved: source ("generated" from a .step.py generator vs. "imported" direct STEP), whether it was an assembly, whether it was served from cache or rebuilt, whether assembly selectors were re-extracted, and how long artifact resolution took. Everyday snapshot usage does not need --debug; it exists for diagnosing slow or unexpected renders.
 """
 
 
@@ -380,18 +386,52 @@ def validate_direct_settings_payload(
     return dict(parsed)
 
 
+def validate_display_settings_values(payload: Mapping[str, object], *, source_label: str) -> None:
+    """Reject typo'd closed-set display VALUES up front. The renderer silently falls back
+    to defaults on unknown projection/mode/exploded.axis (e.g. ``projection:"ortho"`` renders
+    perspective), so a late no-op produces a wrong image with no error — catch it here.
+
+    Only closed-set, typo-prone fields are validated; the alias-rich/coerced exploded fields
+    (enabled, spacing, direction, ...) are left to the renderer's lenient normalization to
+    avoid false rejections of inputs the browser accepts."""
+    projection = payload.get("projection")
+    if projection is not None and str(projection).strip().lower() not in {"orthographic", "perspective"}:
+        raise SnapshotError(
+            f"--display projection must be orthographic or perspective; got {projection!r} ({source_label})"
+        )
+    mode = payload.get("mode")
+    if mode is not None:
+        normalized_mode = re.sub(r"[\s-]+", "_", str(mode).strip().lower())
+        if normalized_mode not in DISPLAY_MODE_ALIASES:
+            supported = ", ".join(sorted(set(DISPLAY_MODE_ALIASES.values())))
+            raise SnapshotError(f"--display mode must be one of: {supported}; got {mode!r} ({source_label})")
+    exploded = payload.get("exploded")
+    if is_plain_object(exploded):
+        axis = exploded.get("axis")
+        if axis is not None:
+            axis_text = str(axis).strip().lower()
+            axis_base = axis_text[1:] if axis_text.startswith("-") else axis_text
+            if axis_base not in {"x", "y", "z", "radial"}:
+                raise SnapshotError(
+                    f"--display exploded.axis must be one of x, y, z, radial (optionally '-'-prefixed); "
+                    f"got {axis!r} ({source_label})"
+                )
+
+
 def load_display_option(raw_display: object, *, cwd: Path) -> dict[str, object]:
     display = str(raw_display or "").strip()
     if not display:
         raise SnapshotError("--display requires a JSON object, JSON file path, or display mode")
     if display.startswith("{"):
-        return validate_direct_settings_payload(
+        payload = validate_direct_settings_payload(
             load_json_text(display, "--display"),
             option_name="--display",
             source_label="--display",
             allowed_keys=DISPLAY_OPTION_KEYS,
             setting_label="display settings",
         )
+        validate_display_settings_values(payload, source_label="--display")
+        return payload
 
     display_path = Path(display) if Path(display).is_absolute() else cwd / display
     looks_like_file = display.lower().endswith(".json") or "/" in display or "\\" in display
@@ -403,13 +443,15 @@ def load_display_option(raw_display: object, *, cwd: Path) -> dict[str, object]:
         return {"mode": DISPLAY_MODE_ALIASES[normalized_mode]}
     if not display_path.exists():
         raise SnapshotError(f"Display JSON file does not exist: {display}")
-    return validate_direct_settings_payload(
+    payload = validate_direct_settings_payload(
         load_json_text(display_path.read_text(encoding="utf-8"), str(display_path)),
         option_name="--display",
         source_label=str(display_path),
         allowed_keys=DISPLAY_OPTION_KEYS,
         setting_label="display settings",
     )
+    validate_display_settings_values(payload, source_label=str(display_path))
+    return payload
 
 
 def load_appearance_option(raw_appearance: object, *, cwd: Path) -> object:
@@ -558,6 +600,12 @@ def input_kind(file_path: Path) -> str:
         return "stp"
     if suffix == ".py":
         return "python"
+    if suffix == ".glb":
+        return "glb"
+    if suffix == ".stl":
+        return "stl"
+    if suffix == ".3mf":
+        return "3mf"
     return ""
 
 
@@ -775,7 +823,6 @@ def ensure_render_job_step_artifact(
         ensure_artifact = load_ensure_step_topology_artifact()
         return ensure_artifact(
             target,
-            owner="cad-snapshot",
             require_selector=require_selector,
             debug=debug_info,
         )
@@ -866,6 +913,116 @@ def normalize_render_job_selection(
     return normalized
 
 
+def resolve_mesh_render_job(
+    job: dict[str, object],
+    *,
+    kind: str,
+    input_path: Path,
+    root_path: Path,
+    resolved_cwd: Path,
+    timestamp: str | None,
+) -> dict[str, object]:
+    """Resolve a direct mesh input (GLB/STL/3MF) that carries no STEP topology.
+
+    Meshes render through the shared mesh path, so this skips the STEP artifact/package
+    pipeline entirely and hands the renderer a plain asset URL. STEP-only options are
+    rejected up front with clear errors rather than silently ignored downstream."""
+    label = kind.upper()
+
+    # Selector focus/hide/refs need the selector index built from STEP topology.
+    if selection_filter_values(job):
+        raise SnapshotError(
+            f"selection focus/hide/refs require STEP topology; {label} mesh inputs have no "
+            "part/subassembly selectors"
+        )
+    # stepParameters drive a STEP parameter sidecar module.
+    if has_step_parameter_render_values(job.get("stepParameters")):
+        raise SnapshotError(
+            f"stepParameters require a STEP model; {label} mesh inputs are not parametric"
+        )
+
+    mode = str(job.get("mode") or "view").strip().lower()
+    if mode not in SUPPORTED_RENDER_MODES:
+        raise SnapshotError(f"Unsupported render mode: {mode or '(missing)'}")
+    if mode not in MESH_SUPPORTED_RENDER_MODES:
+        supported = ", ".join(sorted(MESH_SUPPORTED_RENDER_MODES))
+        raise SnapshotError(
+            f"{mode} mode requires STEP topology; {label} mesh inputs support: {supported}"
+        )
+
+    display = job.get("display") if is_plain_object(job.get("display")) else {}
+    raw_display_mode = re.sub(r"[\s-]+", "_", str(display.get("mode") or "").strip().lower())
+    canonical_display_mode = DISPLAY_MODE_ALIASES.get(raw_display_mode, raw_display_mode)
+    if canonical_display_mode in TOPOLOGY_DISPLAY_MODES:
+        raise SnapshotError(
+            f"{canonical_display_mode} display requires STEP CAD edges; {label} mesh inputs "
+            "render shaded without CAD linework"
+        )
+    exploded = display.get("exploded") if is_plain_object(display.get("exploded")) else None
+    if exploded is not None and exploded.get("enabled"):
+        raise SnapshotError(
+            f"exploded view requires STEP assembly occurrence structure; {label} mesh inputs "
+            "cannot be exploded"
+        )
+
+    outputs = job.get("outputs") if isinstance(job.get("outputs"), list) else []
+    if mode != "list" and not outputs:
+        raise SnapshotError("render job must include outputs for non-list modes")
+
+    normalized_render = dict(job.get("render") if is_plain_object(job.get("render")) else {})
+    normalized_render.pop("clip", None)
+    normalized_render.pop("clipSettings", None)
+    raw_scale = str(
+        normalized_render.get("scale")
+        or normalized_render.get("sceneScale")
+        or normalized_render.get("sceneScaleMode")
+        or job.get("scale")
+        or job.get("sceneScale")
+        or ""
+    ).strip().lower()
+    if raw_scale:
+        normalized_render["scale"] = "cad"
+
+    normalized_outputs: list[dict[str, object]] = []
+    resolved_timestamp = timestamp or snapshot_timestamp()
+    for output in outputs:
+        output_object = dict(output if is_plain_object(output) else {})
+        width, height = resolve_output_size({**job, "mode": mode}, output_object)
+        output_path = str(output_object.get("path") or "")
+        timestamped_output_path = timestamp_output_path(output_path, resolved_timestamp)
+        normalized_outputs.append(
+            {
+                **output_object,
+                "path": str((resolved_cwd / timestamped_output_path).resolve()) if timestamped_output_path else "",
+                "width": width,
+                "height": height,
+                "camera": output_object.get("camera") or job.get("camera") or "iso",
+            }
+        )
+
+    asset_url = asset_url_for_path(input_path, root_path)
+    resolved: dict[str, object] = {
+        "rootPath": str(root_path),
+        "inputPath": str(input_path),
+        "inputUrl": asset_url,
+        "kind": kind,
+        "url": asset_url,
+    }
+    if bool(job.get("debug")):
+        resolved["debug"] = {"meshSource": {"kind": kind}}
+
+    job.pop("clip", None)
+    job.pop("clipSettings", None)
+    return {
+        **job,
+        "mode": mode,
+        "display": job.get("display") if is_plain_object(job.get("display")) else {"mode": "solid"},
+        "render": normalized_render,
+        "outputs": normalized_outputs,
+        "resolved": resolved,
+    }
+
+
 def resolve_render_job(
     raw_job: object,
     *,
@@ -899,8 +1056,20 @@ def resolve_render_job(
         input_path = logical_step_path_for_python_source(input_path)
         root_path = input_path.parent.resolve()
         kind = "step"
+    if kind in MESH_INPUT_KINDS:
+        return resolve_mesh_render_job(
+            job,
+            kind=kind,
+            input_path=input_path,
+            root_path=root_path,
+            resolved_cwd=resolved_cwd,
+            timestamp=timestamp,
+        )
     if kind not in {"step", "stp"}:
-        raise SnapshotError("Snapshot supports only STEP/STP inputs or same-stem Python generators")
+        raise SnapshotError(
+            "Snapshot supports STEP/STP inputs, same-stem Python generators, "
+            "or direct GLB/STL/3MF meshes"
+        )
 
     debug_enabled = bool(job.get("debug"))
     step_artifact_debug: dict[str, object] | None = {} if debug_enabled else None
@@ -1034,6 +1203,10 @@ def content_type_for_path(path: Path) -> str:
         return "application/wasm"
     if path.suffix.lower() == ".glb":
         return "model/gltf-binary"
+    if path.suffix.lower() == ".stl":
+        return "model/stl"
+    if path.suffix.lower() == ".3mf":
+        return "model/3mf"
     guessed, _ = mimetypes.guess_type(path)
     return guessed or "application/octet-stream"
 

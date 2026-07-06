@@ -637,15 +637,20 @@ function renderSectionPng(segments, width, height, themeSettings, {
 }
 
 export function listRenderableParts(meshData) {
-  return toArray(meshData.parts).map((part, index) => ({
-    id: String(part?.id || part?.occurrenceId || `part:${index}`),
-    occurrenceId: String(part?.occurrenceId || part?.id || ""),
-    name: String(part?.name || part?.label || part?.id || `Part ${index + 1}`),
-    label: String(part?.label || part?.name || part?.id || `Part ${index + 1}`),
-    triangleCount: Math.max(0, Math.floor(toFiniteNumber(part?.triangleCount, 0))),
-    vertexCount: Math.max(0, Math.floor(toFiniteNumber(part?.vertexCount, 0))),
-    bounds: part?.bounds || null
-  }));
+  return toArray(meshData.parts).map((part, index) => {
+    const occurrenceId = String(part?.occurrenceId || part?.id || "");
+    return {
+      id: String(part?.id || part?.occurrenceId || `part:${index}`),
+      occurrenceId,
+      // Selector ref an agent can paste straight into snapshot --focus/--hide or inspect.
+      ref: occurrenceId ? `#${occurrenceId}` : "",
+      name: String(part?.name || part?.label || part?.id || `Part ${index + 1}`),
+      label: String(part?.label || part?.name || part?.id || `Part ${index + 1}`),
+      triangleCount: Math.max(0, Math.floor(toFiniteNumber(part?.triangleCount, 0))),
+      vertexCount: Math.max(0, Math.floor(toFiniteNumber(part?.vertexCount, 0))),
+      bounds: part?.bounds || null
+    };
+  });
 }
 
 export function renderJobContext(meshData, job = {}) {
@@ -1053,6 +1058,10 @@ export async function captureModel(viewport, captureOptions = {}) {
   return {
     ok: true,
     mode,
+    // Echo the display state actually applied — for non-STEP meshes this reports the
+    // forced solid/perspective defaults, so an agent sees what was really rendered.
+    displayMode: context.displayMode,
+    projection: context.displaySettings?.projection ?? null,
     outputs: renderedOutputs,
     timings: {
       sceneBuildMs,

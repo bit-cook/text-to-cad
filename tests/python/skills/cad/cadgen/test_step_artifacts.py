@@ -80,21 +80,6 @@ class StepArtifactsTests(unittest.TestCase):
             )
             self.assertEqual(step_artifacts._python_source_for_target(target), generator_path)
 
-    def test_missing_logical_step_can_still_use_python_source(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            step_path = root / "part.step"
-            source_path = root / "part.py"
-            source_path.write_text("def gen_step():\n    return None\n", encoding="utf-8")
-
-            target = ResolvedStepTarget(
-                cad_path="part",
-                kind="part",
-                source_path=step_path,
-                step_path=step_path,
-            )
-            self.assertEqual(step_artifacts._python_source_for_target(target), source_path)
-
     def test_existing_step_spec_can_reuse_python_backed_glb_when_step_hash_matches(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
