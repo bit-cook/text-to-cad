@@ -170,7 +170,7 @@ def help_text() -> str:
   python scripts/snapshot --job -
   python scripts/snapshot --input models/part.step --output /tmp/part.png --appearance workbench
 
-Shortcut flags are for common STEP/STP snapshots. --job accepts one render job, an array of render jobs, or { "jobs": [...] }. Every job input must be a relative or absolute .step/.stp path, a same-stem Python generator, or a direct .glb/.stl/.3mf mesh; direct DXF/G-code/robot-description inputs are unsupported. Mesh inputs render shaded through the shared mesh path and support camera, appearance, size-profile, orbit, and list output, but reject STEP-only options: --params/stepParameters, --focus/--hide selector refs, exploded and hidden_edges/hidden_lines_removed display, and section mode. The default appearance is the workbench saved theme. --appearance accepts a saved theme name, an inline JSON appearance settings object, or a JSON appearance settings file path. --display accepts solid, rendered, transparent, hidden_edges, hidden_lines_removed, unshaded, wireframe, an inline JSON display settings object, or a JSON display settings file path. Projection is a theme trait taken from the appearance (the default workbench/light theme is orthographic; the presentation stage themes are perspective); pass {"projection":"perspective"} in display JSON only to override it for a one-off. Exploded view and edge styling belong in display JSON. The exploded view is an ordered step document: {"mode":"rendered","exploded":{"enabled":true,"amount":1,"steps":[{"type":"translate","targets":["o1.2"],"axis":[0,0,1],"distance":40}]},"edges":{"color":"#132232"}} moves the o1.2 subtree 40mm up. Steps may be "translate" (axis+distance), "rotate" (axis+origin+angleDeg), or "radial" (axis+center+distance); "targets" are occurrence-path prefixes; "amount" is the 0..1 scrub. Omit "steps" to auto-generate from hints: {"exploded":{"enabled":true,"auto":{"mode":"auto","gapScale":1.4,"depth":1}}} where mode is auto|x|y|z|radial. --camera accepts a preset, azimuth:elevation pair, or JSON object with preset, position, target, up, and zoom fields. --focus and --hide accept one or more selector refs such as #o1.2 for parts or subassemblies; pass the flag repeatedly or list refs after the flag. Option JSON is direct settings JSON, not a wrapped job fragment. Full JSON jobs use top-level appearance and display. Use --view-labels to burn the camera/view label into shortcut outputs. Use --params with STEP parameter sidecar JSON values, and --size-profile for default dimensions such as simple, diagnostic, labeled, assembly, presentation, orbit, or contact-sheet. Output file names are saved with a shared UTC seconds timestamp before the extension. Use --debug (or a job-level "debug": true field) to add a "debug" section to --json output reporting how each STEP/STP artifact was resolved: source ("generated" from a .step.py generator vs. "imported" direct STEP), whether it was an assembly, whether it was served from cache or rebuilt, whether assembly selectors were re-extracted, and how long artifact resolution took. Everyday snapshot usage does not need --debug; it exists for diagnosing slow or unexpected renders.
+Shortcut flags are for common STEP/STP snapshots. --job accepts one render job, an array of render jobs, or { "jobs": [...] }. Every job input must be a relative or absolute .step/.stp path, a same-stem Python generator, or a direct .glb/.stl/.3mf mesh; direct DXF/G-code/robot-description inputs are unsupported. Mesh inputs render shaded solid through the shared mesh path and support camera, display projection (orthographic/perspective), appearance, size-profile, orbit, and list output, but reject STEP-only options: --params/stepParameters, --focus/--hide selector refs, exploded and non-solid display modes, and section mode. The default appearance is the workbench saved theme. --appearance accepts a saved theme name, an inline JSON appearance settings object, or a JSON appearance settings file path. --display accepts solid, rendered, transparent, hidden_edges, hidden_lines_removed, unshaded, wireframe, an inline JSON display settings object, or a JSON display settings file path. Projection is a theme trait taken from the appearance (the default workbench/light theme is orthographic; the presentation stage themes are perspective); pass {"projection":"perspective"} in display JSON only to override it for a one-off. Exploded view and edge styling belong in display JSON. The exploded view is an ordered step document: {"mode":"rendered","exploded":{"enabled":true,"amount":1,"steps":[{"type":"translate","targets":["o1.2"],"axis":[0,0,1],"distance":40}]},"edges":{"color":"#132232"}} moves the o1.2 subtree 40mm up. Steps may be "translate" (axis+distance), "rotate" (axis+origin+angleDeg), or "radial" (axis+center+distance); "targets" are occurrence-path prefixes; "amount" is the 0..1 scrub. Omit "steps" to auto-generate from hints: {"exploded":{"enabled":true,"auto":{"mode":"auto","gapScale":1.4,"depth":1}}} where mode is auto|x|y|z|radial. --camera accepts a preset, azimuth:elevation pair, or JSON object with preset, position, target, up, and zoom fields. --focus and --hide accept one or more selector refs such as #o1.2 for parts or subassemblies; pass the flag repeatedly or list refs after the flag. Option JSON is direct settings JSON, not a wrapped job fragment. Full JSON jobs use top-level appearance and display. Use --view-labels to burn the camera/view label into shortcut outputs. Use --params with STEP parameter sidecar JSON values, and --size-profile for default dimensions such as simple, diagnostic, labeled, assembly, presentation, orbit, or contact-sheet. Output file names are saved with a shared UTC seconds timestamp before the extension. Use --debug (or a job-level "debug": true field) to add a "debug" section to --json output reporting how each STEP/STP artifact was resolved: source ("generated" from a .step.py generator vs. "imported" direct STEP), whether it was an assembly, whether it was served from cache or rebuilt, whether assembly selectors were re-extracted, and how long artifact resolution took. Everyday snapshot usage does not need --debug; it exists for diagnosing slow or unexpected renders.
 """
 
 
@@ -394,27 +394,32 @@ def validate_display_settings_values(payload: Mapping[str, object], *, source_la
     Only closed-set, typo-prone fields are validated; the alias-rich/coerced exploded fields
     (enabled, spacing, direction, ...) are left to the renderer's lenient normalization to
     avoid false rejections of inputs the browser accepts."""
-    projection = payload.get("projection")
-    if projection is not None and str(projection).strip().lower() not in {"orthographic", "perspective"}:
+    # An empty/whitespace value means "unset": the renderer treats it as absent and falls
+    # back to the default (it does not error), so validating it here would be a false
+    # rejection of input the browser accepts. Only validate genuinely-present values.
+    projection = str(payload.get("projection") or "").strip().lower()
+    if projection and projection not in {"orthographic", "perspective"}:
         raise SnapshotError(
-            f"--display projection must be orthographic or perspective; got {projection!r} ({source_label})"
+            f"--display projection must be orthographic or perspective; "
+            f"got {payload.get('projection')!r} ({source_label})"
         )
-    mode = payload.get("mode")
-    if mode is not None:
-        normalized_mode = re.sub(r"[\s-]+", "_", str(mode).strip().lower())
+    mode = str(payload.get("mode") or "").strip()
+    if mode:
+        normalized_mode = re.sub(r"[\s-]+", "_", mode.lower())
         if normalized_mode not in DISPLAY_MODE_ALIASES:
             supported = ", ".join(sorted(set(DISPLAY_MODE_ALIASES.values())))
-            raise SnapshotError(f"--display mode must be one of: {supported}; got {mode!r} ({source_label})")
+            raise SnapshotError(
+                f"--display mode must be one of: {supported}; got {payload.get('mode')!r} ({source_label})"
+            )
     exploded = payload.get("exploded")
     if is_plain_object(exploded):
-        axis = exploded.get("axis")
-        if axis is not None:
-            axis_text = str(axis).strip().lower()
-            axis_base = axis_text[1:] if axis_text.startswith("-") else axis_text
+        axis = str(exploded.get("axis") or "").strip().lower()
+        if axis:
+            axis_base = axis[1:] if axis.startswith("-") else axis
             if axis_base not in {"x", "y", "z", "radial"}:
                 raise SnapshotError(
                     f"--display exploded.axis must be one of x, y, z, radial (optionally '-'-prefixed); "
-                    f"got {axis!r} ({source_label})"
+                    f"got {exploded.get('axis')!r} ({source_label})"
                 )
 
 
@@ -950,6 +955,9 @@ def resolve_mesh_render_job(
             f"{mode} mode requires STEP topology; {label} mesh inputs support: {supported}"
         )
 
+    # Meshes render shaded solid (no CAD topology for edges/materials). Projection is
+    # honored by the renderer, but any non-solid display mode would be silently dropped,
+    # so reject it up front with a clear error instead of returning a misleading image.
     display = job.get("display") if is_plain_object(job.get("display")) else {}
     raw_display_mode = re.sub(r"[\s-]+", "_", str(display.get("mode") or "").strip().lower())
     canonical_display_mode = DISPLAY_MODE_ALIASES.get(raw_display_mode, raw_display_mode)
@@ -957,6 +965,11 @@ def resolve_mesh_render_job(
         raise SnapshotError(
             f"{canonical_display_mode} display requires STEP CAD edges; {label} mesh inputs "
             "render shaded without CAD linework"
+        )
+    if canonical_display_mode and canonical_display_mode != "solid":
+        raise SnapshotError(
+            f"{canonical_display_mode} display mode is not supported for {label} mesh inputs; "
+            "meshes render shaded solid (STEP models support the full display-mode set)"
         )
     exploded = display.get("exploded") if is_plain_object(display.get("exploded")) else None
     if exploded is not None and exploded.get("enabled"):

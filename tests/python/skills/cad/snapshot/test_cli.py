@@ -224,6 +224,13 @@ class SnapshotCliTests(unittest.TestCase):
             {"exploded": {"axis": "-z"}},
         )
 
+    def test_display_json_treats_empty_string_values_as_unset(self) -> None:
+        # The renderer treats an empty string as absent and falls back to the default, so
+        # validation must not false-reject empty strings an agent emits for unset fields.
+        self.assertEqual(self._display_job('{"projection":""}')["display"], {"projection": ""})
+        self.assertEqual(self._display_job('{"mode":""}')["display"], {"mode": ""})
+        self.assertEqual(self._display_job('{"exploded":{"axis":""}}')["display"], {"exploded": {"axis": ""}})
+
     def test_edge_settings_belong_to_display_json(self) -> None:
         options = parse_snapshot_args(
             [
@@ -681,18 +688,34 @@ class SnapshotCliTests(unittest.TestCase):
         self.assertEqual(job["mode"], "list")
         self.assertEqual(job["resolved"]["kind"], "glb")
 
-    def test_render_job_passes_plain_display_mode_for_mesh_input(self) -> None:
+    def test_render_job_rejects_non_solid_display_mode_for_mesh_input(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = self._mesh_job_env(temporary_directory, "widget.glb", b"glTF")
+            for non_solid in ("wireframe", "transparent", "unshaded"):
+                with self.assertRaisesRegex(SnapshotError, "display mode is not supported"):
+                    resolve_render_job_packet(
+                        {
+                            "input": "models/widget.glb",
+                            "display": {"mode": non_solid},
+                            "outputs": [{"path": "tmp/iso.png", "camera": "iso"}],
+                        },
+                        cwd=root,
+                    )
+
+    def test_render_job_allows_solid_and_projection_for_mesh_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = self._mesh_job_env(temporary_directory, "widget.glb", b"glTF")
+            # Solid mode + orthographic projection both pass (projection is honored by the
+            # renderer; it is camera-only, not topology-dependent).
             packet = resolve_render_job_packet(
                 {
                     "input": "models/widget.glb",
-                    "display": {"mode": "wireframe"},
+                    "display": {"mode": "solid", "projection": "orthographic"},
                     "outputs": [{"path": "tmp/iso.png", "camera": "iso"}],
                 },
                 cwd=root,
             )
-        self.assertEqual(packet["jobs"][0]["display"]["mode"], "wireframe")
+        self.assertEqual(packet["jobs"][0]["display"], {"mode": "solid", "projection": "orthographic"})
 
     def test_render_job_missing_mesh_file_errors(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

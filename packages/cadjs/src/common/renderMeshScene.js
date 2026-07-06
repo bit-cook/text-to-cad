@@ -1058,10 +1058,11 @@ export async function captureModel(viewport, captureOptions = {}) {
   return {
     ok: true,
     mode,
-    // Echo the display state actually applied — for non-STEP meshes this reports the
-    // forced solid/perspective defaults, so an agent sees what was really rendered.
+    // Echo the display state actually applied — projection is the resolved camera
+    // projection (theme trait or explicit override), so an agent sees what was
+    // really rendered, including the forced solid mode for non-STEP meshes.
     displayMode: context.displayMode,
-    projection: context.displaySettings?.projection ?? null,
+    projection: context.projection ?? context.displaySettings?.projection ?? null,
     outputs: renderedOutputs,
     timings: {
       sceneBuildMs,
