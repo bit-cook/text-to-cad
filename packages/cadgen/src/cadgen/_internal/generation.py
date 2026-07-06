@@ -1692,7 +1692,7 @@ def _generate_step_outputs(
         # gen_step never writes a STEP, so the artifact pipeline must not require one.
         output_kwargs["require_step_file"] = False
     else:
-        # Imported/committed STEP target (e.g. `scripts/step <file>.step --kind assembly`):
+        # Imported/committed STEP target (kind supplied by the caller or inferred upstream):
         # _generate_part_outputs loads + meshes the on-disk STEP and emits the same flat
         # component-GLB package. Without this branch the function fell off the end and silently
         # returned None — no package written — while the CLI still reported success.
@@ -1812,7 +1812,9 @@ def _validate_step_target(
             raise ValueError(f"{tool_name} target does not define gen_step(): {spec.source_ref}")
         return
     if direct_step_kind is None:
-        raise ValueError(f"{tool_name} --kind is required for direct STEP/STP targets: {spec.source_ref}")
+        raise ValueError(
+            f"{tool_name} requires an explicit direct_step_kind for direct STEP/STP targets: {spec.source_ref}"
+        )
 
 
 def _existing_direct_step_targets(targets: Sequence[str]) -> list[str]:
@@ -2171,15 +2173,17 @@ def generate_step_targets(
     force: bool = False,
     verbose: bool = False,
 ) -> int:
-    tool_name = "scripts/step"
+    tool_name = "scripts/gen"
     if direct_step_kind is not None and direct_step_kind not in {"part", "assembly"}:
-        raise ValueError(f"{tool_name} --kind must be 'part' or 'assembly'")
+        raise ValueError(f"{tool_name} direct_step_kind must be 'part' or 'assembly'")
     if direct_step_kind is None:
         direct_targets = _existing_direct_step_targets(targets)
         if direct_targets:
             joined = ", ".join(direct_targets)
-            raise ValueError(f"{tool_name} --kind is required for direct STEP/STP targets: {joined}")
-    logger = CliLogger("scripts/step", verbose=verbose)
+            raise ValueError(
+                f"{tool_name} requires an explicit direct_step_kind for direct STEP/STP targets: {joined}"
+            )
+    logger = CliLogger("scripts/gen", verbose=verbose)
     if output is not None and targets_include_output_pairs(targets):
         raise ValueError(f"{tool_name} --output cannot be combined with SOURCE=OUTPUT targets")
     output_path = _resolve_cli_output_path(output, expected_suffixes=(".step",), tool_name=tool_name)

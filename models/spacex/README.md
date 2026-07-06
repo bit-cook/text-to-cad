@@ -13,7 +13,7 @@ as simplified translucent placeholder volumes labeled
 Only `.step.py` generator sources (plus docs and renders) are kept in this
 tree; viewer render packages are generated on demand into per-package
 `__cadcache__/` directories, and STEP/IGES/STL/OBJ/GLB exports are produced
-on demand (`scripts/step ... --step/--stl/--glb`, `export_extras.py`).
+on demand (`scripts/export ... --step/--stl/--glb`, `export_extras.py`).
 
 ## Packages
 

@@ -3,7 +3,7 @@
 Educational, non-functional public-source reconstruction. Not suitable for
 manufacture, propulsion, testing, or operational engineering.
 
-STEP/STL/GLB come from the CAD skill pipeline (`scripts/step ... --step/--stl/
+STEP/STL/GLB come from the CAD skill pipeline (`scripts/export ... --step/--stl/
 --glb`). This helper adds the two formats that pipeline does not emit:
 
     PYTHONPATH=<repo>/packages/cadpy/src <venv-python> export_extras.py
@@ -75,7 +75,7 @@ def main() -> int:
             if not ok:
                 failures.append(obj_path.name)
         else:
-            print(f"{name}.obj: skipped ({glb_path.name} missing; run scripts/step --glb first)")
+            print(f"{name}.obj: skipped ({glb_path.name} missing; run scripts/export --glb first)")
     if failures:
         print("FAILURES:", ", ".join(failures))
         return 1

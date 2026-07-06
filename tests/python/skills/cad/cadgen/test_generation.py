@@ -192,7 +192,7 @@ class CadGenerationTests(unittest.TestCase):
         )
 
     def test_imported_step_assembly_force_writes_component_package(self) -> None:
-        """Regression: ``scripts/step <committed>.step --kind assembly --force`` must actually
+        """Regression: a direct/committed STEP target built with force must actually
         emit the component-GLB package. ``_generate_step_outputs`` previously routed only
         ``source == "generated"`` specs into the build pipeline and fell off the end for an
         imported/committed STEP — silently returning None (no package written) while the CLI
@@ -1317,7 +1317,7 @@ class CadGenerationTests(unittest.TestCase):
     def test_direct_step_generation_requires_kind(self) -> None:
         step_path = self._write_step("source")
 
-        with self.assertRaisesRegex(ValueError, "--kind is required for direct STEP/STP targets"):
+        with self.assertRaisesRegex(ValueError, "requires an explicit direct_step_kind for direct STEP/STP targets"):
             cad_generation.generate_step_targets([str(step_path)])
 
     def test_direct_step_generation_reads_configured_stl(self) -> None:
@@ -2117,7 +2117,7 @@ class CadGenerationTests(unittest.TestCase):
             [str(script)],
             direct_step_kind="part",
             expected_output_suffixes=(".step",),
-            tool_name="scripts/step",
+            tool_name="scripts/gen",
             include_output_paths=True,
         )
         return selected[0]

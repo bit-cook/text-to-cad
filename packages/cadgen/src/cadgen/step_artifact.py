@@ -53,7 +53,12 @@ def _scene_has_assembly_structure(scene: LoadedStepScene) -> bool:
     return False
 
 
-def _infer_entry_kind(step_path: Path, scene: LoadedStepScene) -> str:
+def infer_entry_kind(step_path: Path, scene: LoadedStepScene) -> str:
+    """Classify a STEP model as ``part`` or ``assembly`` without a caller-supplied kind.
+
+    Embedded text-to-cad ``entryKind`` metadata wins when present (generated STEP);
+    otherwise a STEP whose product hierarchy has child nodes reads as an assembly.
+    """
     metadata_kind = None
     try:
         metadata_kind = read_text_to_cad_step_metadata(step_path).get("entryKind")

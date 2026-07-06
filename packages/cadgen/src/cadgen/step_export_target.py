@@ -1,16 +1,17 @@
-"""Export one CAD model to a single user-chosen file at an explicit path.
+"""Export one CAD model to standalone STEP/STL/3MF/GLB files.
 
-This is the user-facing "Export model" backend for the CAD Viewer: given a model
-(an imported ``.step``/``.stp`` or a generated ``.step.py``), write exactly one of
-STEP / 3MF / STL / GLB to an arbitrary ``--out`` destination — typically a path the
-user picked from a native Save dialog.
+Two callers share this module: the CAD Viewer's "Export model" backend (one format to an
+arbitrary ``--out`` destination picked from a native Save dialog, via ``main()``/
+:func:`export_model_to_path`) and the CAD skill's ``scripts/export`` CLI (one or more
+formats per run, via :func:`export_cad_target`). Both accept an imported ``.step``/
+``.stp`` or a generated ``gen_step()`` Python source; both always build from source, so
+exports can never be stale.
 
 It is deliberately distinct from :mod:`cadgen.step_artifact`, which only (re)builds the
 per-folder ``__cadgen__`` viewer GLB/topology package beside the source. This module
-produces a single standalone file at an arbitrary location and writes **no** package or
-beside-source artifacts. It reuses the same scene build + mesh + per-format exporters as
-the ``scripts/step`` sidecar jobs (see ``generation.py``), so output is byte-equivalent to
-the established sidecar pipeline — only the destination differs.
+produces standalone files and writes **no** package or beside-source artifacts. Within a
+run the scene is built once and meshed at most once, so every requested format comes from
+identical geometry.
 
 Emits a single final JSON line on stdout: ``{"ok": true, "path": ..., "filename": ...}``
 or ``{"ok": false, "error": ...}`` (the Node spawner parses the last stdout JSON line).
@@ -34,7 +35,7 @@ from cadgen._internal.generation import (
 )
 from cadgen._internal.glb import export_native_glb_from_scene
 from cadgen.metadata import normalize_mesh_numeric
-from cadgen.step_artifact import _build_entry_spec, _cad_ref_for_step, _infer_entry_kind
+from cadgen.step_artifact import _build_entry_spec, _cad_ref_for_step, infer_entry_kind
 from cadgen.step_export import export_build123d_step_file
 from cadgen._internal.step_scene import (
     LoadedStepScene,
@@ -73,18 +74,21 @@ def _apply_mesh_overrides(
 
 def _resolve_spec_and_scene(
     repo_root: Path,
-    step_path: Path,
+    step_path: Path | None,
     source_path: Path | None,
     *,
     mesh_tolerance: float | None,
     mesh_angular_tolerance: float | None,
+    kind: str | None = None,
     reset_runtime_closure: bool = False,
     logger: CliLogger,
 ) -> tuple[EntrySpec, LoadedStepScene]:
     """Build the entry spec + an in-memory scene for the model.
 
     Generated model (``--source-path`` given): run ``gen_step()`` in-process to build the
-    scene — generated models keep no on-disk STEP. Imported model: load the existing STEP.
+    scene — generated models keep no on-disk STEP. Imported model: load the existing STEP,
+    classifying it via :func:`cadgen.step_artifact.infer_entry_kind` unless ``kind``
+    overrides the inference.
     """
     if source_path is not None:
         source = source_from_path(source_path)
@@ -95,7 +99,7 @@ def _resolve_spec_and_scene(
             raise RuntimeError(f"Generator defines no STEP output: {source_path}")
         # Align the logical STEP path/name when the caller passed an explicit --step that the
         # generator does not itself resolve to (mirrors cadgen.step_artifact).
-        if spec.step_path.resolve() != step_path.resolve():
+        if step_path is not None and spec.step_path.resolve() != step_path.resolve():
             spec = replace(
                 spec,
                 cad_ref=_cad_ref_for_step(repo_root, step_path),
@@ -114,16 +118,20 @@ def _resolve_spec_and_scene(
             raise RuntimeError(f"Generator did not produce a STEP scene: {spec.source_ref}")
         return spec, scene
 
+    if kind is not None and kind not in {"part", "assembly"}:
+        raise ValueError(f"kind must be 'part' or 'assembly', got: {kind}")
+
+    if step_path is None:
+        raise ValueError("step_path is required for imported STEP/STP models")
     if not step_path.is_file():
         raise FileNotFoundError(f"STEP file does not exist: {step_path}")
     with logger.timed(f"load STEP {step_path.name}"):
         scene = load_step_scene(step_path)
-    kind = _infer_entry_kind(step_path, scene)
     spec = _build_entry_spec(
         repo_root,
         step_path,
         scene,
-        kind=kind,
+        kind=kind or infer_entry_kind(step_path, scene),
         mesh_tolerance=mesh_tolerance,
         mesh_angular_tolerance=mesh_angular_tolerance,
     )
@@ -240,6 +248,118 @@ def export_model_to_path(
     selector_options = _selector_options_for_part(spec, scene=scene)
     written = _export_scene(fmt, spec, scene, out, selector_options)
     return {"ok": True, "path": str(written), "filename": written.name, "format": fmt}
+
+
+def _is_step_suffix(path: Path) -> bool:
+    return path.suffix.lower() in {".step", ".stp"}
+
+
+def _resolve_export_output(
+    fmt: str,
+    raw: str | Path | None,
+    *,
+    logical_step: Path,
+) -> Path:
+    """Resolve one requested export output. ``None`` means the default sibling path
+    (``<name>.<ext>`` beside the logical STEP); a relative path resolves beside the
+    logical STEP, matching the historical sidecar-path semantics."""
+    if raw is None:
+        if fmt == "step":
+            return logical_step.resolve()
+        return logical_step.with_suffix(FORMAT_SUFFIX[fmt]).resolve()
+    out = Path(raw).expanduser()
+    if not out.is_absolute():
+        out = logical_step.parent / out
+    out = out.resolve()
+    if fmt == "step":
+        if not _is_step_suffix(out):
+            raise ValueError(f"--step output must end with .step or .stp: {raw}")
+    elif out.suffix.lower() != FORMAT_SUFFIX[fmt]:
+        raise ValueError(f"--{fmt} output must end with {FORMAT_SUFFIX[fmt]}: {raw}")
+    return out
+
+
+def export_cad_target(
+    target: str | Path,
+    outputs: "list[tuple[str, str | Path | None]]",
+    *,
+    repo_root: Path | None = None,
+    kind: str | None = None,
+    mesh_tolerance: float | None = None,
+    mesh_angular_tolerance: float | None = None,
+    verbose: bool = False,
+    logger: CliLogger | None = None,
+) -> dict[str, object]:
+    """Export one CAD model — an imported ``.step``/``.stp`` or a generated Python
+    ``gen_step()`` source — to one or more of STEP/STL/3MF/GLB in a single run.
+
+    The scene is built once (the generator runs once for a Python source) and meshed at
+    most once, so all requested formats come from identical geometry. ``outputs`` pairs a
+    format name with an explicit output path or ``None`` for the default sibling path.
+    ``kind`` optionally overrides part/assembly inference for imported STEP targets.
+    Writes no ``__cadgen__`` render package or other beside-source artifacts."""
+    if logger is None:
+        logger = CliLogger("scripts/export", verbose=verbose)
+    if not outputs:
+        raise ValueError("No export formats requested")
+    for fmt, _ in outputs:
+        if fmt not in FORMAT_SUFFIX:
+            raise ValueError(f"Unsupported export format: {fmt}")
+    repo_root = Path(repo_root).expanduser().resolve() if repo_root else Path.cwd()
+    target_path = Path(target).expanduser().resolve()
+    mesh_tolerance = normalize_mesh_numeric(mesh_tolerance, field_name="mesh_tolerance")
+    mesh_angular_tolerance = normalize_mesh_numeric(
+        mesh_angular_tolerance, field_name="mesh_angular_tolerance"
+    )
+
+    if _is_step_suffix(target_path):
+        step_path: Path | None = target_path
+        source_path: Path | None = None
+    elif target_path.suffix.lower() == ".py":
+        if kind is not None:
+            raise ValueError(
+                "kind overrides apply only to imported STEP/STP targets; "
+                "generated Python sources infer kind from gen_step()"
+            )
+        step_path = None
+        source_path = target_path
+    else:
+        raise ValueError(
+            f"Export target must be a .step/.stp file or a gen_step() Python source: {target}"
+        )
+
+    spec, scene = _resolve_spec_and_scene(
+        repo_root,
+        step_path,
+        source_path,
+        mesh_tolerance=mesh_tolerance,
+        mesh_angular_tolerance=mesh_angular_tolerance,
+        kind=kind,
+        logger=logger,
+    )
+
+    resolved: list[tuple[str, Path]] = []
+    seen: dict[Path, str] = {}
+    for fmt, raw in outputs:
+        out = _resolve_export_output(fmt, raw, logical_step=spec.step_path)
+        if source_path is None and fmt == "step" and out == spec.step_path.resolve():
+            raise ValueError(
+                "Refusing to export STEP over its own imported source; "
+                f"pass a different --step path than {spec.step_path}"
+            )
+        if out in seen:
+            raise ValueError(f"--{seen[out]} and --{fmt} resolve to the same output path: {out}")
+        seen[out] = fmt
+        resolved.append((fmt, out))
+
+    selector_options = _selector_options_for_part(spec, scene=scene)
+    files: list[dict[str, str]] = []
+    for fmt, out in resolved:
+        with logger.timed(f"export {fmt.upper()} {out.name}"):
+            written = _export_scene(fmt, spec, scene, out, selector_options)
+        files.append({"format": fmt, "path": str(written)})
+    logger.total()
+    return {"ok": True, "files": files}
 
 
 def run_cli_payload(

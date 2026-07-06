@@ -14,8 +14,8 @@ from cadgen._internal.generation import (
 )
 from cadgen.metadata import DEFAULT_MESH_ANGULAR_TOLERANCE, DEFAULT_MESH_TOLERANCE
 from cadgen.catalog import render_package_dir
-from cadgen._internal.step_metadata import read_text_to_cad_step_metadata
 from cadgen._internal.step_scene import LoadedStepScene, load_step_scene
+from cadgen.step_artifact import infer_entry_kind
 from cadgen.step_targets import (
     REGENERATE_STEP_COMMAND,
     REGENERATE_STEP_PROMPT,
@@ -247,7 +247,7 @@ def _scene_for_regeneration(
 
     with (logger.timed(f"load STEP {spec.cad_ref}") if logger is not None else _null_context()):
         scene = load_step_scene(spec.step_path)
-    inferred_kind = _infer_entry_kind(spec.step_path, scene)
+    inferred_kind = infer_entry_kind(spec.step_path, scene)
     if inferred_kind != spec.kind:
         spec = replace(spec, kind=inferred_kind)
     return spec, scene
@@ -321,29 +321,6 @@ def _with_mesh_overrides(
         mesh_tolerance_explicit=mesh_tolerance is not None,
         mesh_angular_tolerance_explicit=mesh_angular_tolerance is not None,
     )
-
-
-def _scene_has_assembly_structure(scene: LoadedStepScene) -> bool:
-    stack = list(scene.roots)
-    if len(stack) > 1:
-        return True
-    while stack:
-        node = stack.pop()
-        if node.children:
-            return True
-        stack.extend(node.children)
-    return False
-
-
-def _infer_entry_kind(step_path: Path, scene: LoadedStepScene) -> str:
-    metadata_kind = None
-    try:
-        metadata_kind = read_text_to_cad_step_metadata(step_path).get("entryKind")
-    except Exception:
-        metadata_kind = None
-    if metadata_kind in {"part", "assembly"}:
-        return metadata_kind
-    return "assembly" if _scene_has_assembly_structure(scene) else "part"
 
 
 def _relative_to_base(repo_root: Path, path: Path) -> str:

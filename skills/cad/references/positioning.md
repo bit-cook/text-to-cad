@@ -180,7 +180,7 @@ When only final static placement matters and no meaningful joint datum exists, u
 7. Generate the assembly through the Python source, not by re-importing the generated STEP (see `step-generation.md`):
 
 ```bash
-python scripts/step path/to/assembly.step.py
+python scripts/gen path/to/assembly.step.py
 python scripts/inspect refs path/to/assembly.step --facts --planes --positioning
 ```
 

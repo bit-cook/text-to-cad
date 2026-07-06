@@ -687,9 +687,9 @@ class InspectRefsTests(unittest.TestCase):
         error = result["errors"][0]
         self.assertEqual("glb_regeneration_failed", error["code"])
         self.assertIn("\nRegenerate STEP artifacts with the following command using the CAD skill:", error["message"])
-        self.assertNotIn("scripts.step", error["message"])
+        self.assertNotIn("scripts.gen", error["message"])
         self.assertIn("regenerateCommand", error)
-        self.assertEqual("python scripts/step", error["regenerateCommand"])
+        self.assertEqual("python scripts/gen", error["regenerateCommand"])
 
     def test_missing_selector_topology_is_an_inspect_error(self) -> None:
         with self._mock_glb_topology(_refs_manifest(self.cad_ref), include_selector=False):
