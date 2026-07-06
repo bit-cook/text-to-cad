@@ -392,6 +392,88 @@ class SnapshotCliTests(unittest.TestCase):
         self.assertEqual(target.source_path, step_path)
         self.assertEqual(kwargs["owner"], "cad-snapshot")
         self.assertFalse(kwargs["require_selector"])
+        self.assertIsNone(kwargs["debug"])
+
+    def test_debug_shortcut_flag_sets_job_debug_field(self) -> None:
+        options = parse_snapshot_args(
+            [
+                "--input",
+                "models/simple/cylindrical_cap.step",
+                "--output",
+                "tmp/cap.png",
+                "--debug",
+            ]
+        )
+        job = load_job_from_options(options, stdin=_TtyStringIO(), cwd=Path.cwd())
+        self.assertTrue(job["debug"])
+
+    def test_render_job_surfaces_step_artifact_debug_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            models = root / "models"
+            models.mkdir()
+            step_path = models / "part.step"
+            step_path.write_text("ISO-10303-21;\nEND-ISO-10303-21;\n", encoding="utf-8")
+            write_package(step_path)
+
+            def fake_ensure(target, **kwargs):
+                debug_info = kwargs.get("debug")
+                if debug_info is not None:
+                    debug_info.update(
+                        {"source": "generated", "assembly": False, "cacheHit": True, "tookMs": 1.5}
+                    )
+                return None
+
+            original_ensure = snapshot_main.ensure_step_topology_artifact
+            try:
+                snapshot_main.ensure_step_topology_artifact = fake_ensure
+                packet = resolve_render_job_packet(
+                    {
+                        "input": "models/part.step",
+                        "debug": True,
+                        "outputs": [{"path": "tmp/iso.png", "camera": "iso"}],
+                    },
+                    cwd=root,
+                )
+            finally:
+                snapshot_main.ensure_step_topology_artifact = original_ensure
+
+        job = packet["jobs"][0]
+        self.assertEqual(
+            job["resolved"]["debug"],
+            {"stepArtifact": {"source": "generated", "assembly": False, "cacheHit": True, "tookMs": 1.5}},
+        )
+
+    def test_render_job_omits_debug_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            models = root / "models"
+            models.mkdir()
+            step_path = models / "part.step"
+            step_path.write_text("ISO-10303-21;\nEND-ISO-10303-21;\n", encoding="utf-8")
+            write_package(step_path)
+            calls = []
+
+            def fake_ensure(target, **kwargs):
+                calls.append(kwargs)
+                return None
+
+            original_ensure = snapshot_main.ensure_step_topology_artifact
+            try:
+                snapshot_main.ensure_step_topology_artifact = fake_ensure
+                packet = resolve_render_job_packet(
+                    {
+                        "input": "models/part.step",
+                        "outputs": [{"path": "tmp/iso.png", "camera": "iso"}],
+                    },
+                    cwd=root,
+                )
+            finally:
+                snapshot_main.ensure_step_topology_artifact = original_ensure
+
+        self.assertIsNone(calls[0]["debug"])
+        job = packet["jobs"][0]
+        self.assertNotIn("debug", job["resolved"])
 
     def test_render_job_rejects_non_step_input_without_artifact_generation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

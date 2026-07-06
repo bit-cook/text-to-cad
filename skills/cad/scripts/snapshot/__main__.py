@@ -143,6 +143,7 @@ class SnapshotOptions:
     focus: list[str] | None = None
     hide: list[str] | None = None
     view_labels: bool = False
+    debug: bool = False
     json: bool = False
     help: bool = False
 
@@ -163,7 +164,7 @@ def help_text() -> str:
   python scripts/snapshot --job -
   python scripts/snapshot --input models/part.step --output /tmp/part.png --appearance workbench
 
-Shortcut flags are for common STEP/STP snapshots. --job accepts one render job, an array of render jobs, or { "jobs": [...] }. Every job input must be a relative or absolute .step/.stp path, or a same-stem Python generator; direct GLB/STL/3MF/DXF/G-code/robot-description inputs are unsupported. The default appearance is the workbench saved theme. --appearance accepts a saved theme name, an inline JSON appearance settings object, or a JSON appearance settings file path. --display accepts solid, rendered, transparent, hidden_edges, hidden_lines_removed, unshaded, wireframe, an inline JSON display settings object, or a JSON display settings file path. Projection is a theme trait taken from the appearance (the default workbench/light theme is orthographic; the presentation stage themes are perspective); pass {"projection":"perspective"} in display JSON only to override it for a one-off. Exploded view and edge styling belong in display JSON. The exploded view is an ordered step document: {"mode":"rendered","exploded":{"enabled":true,"amount":1,"steps":[{"type":"translate","targets":["o1.2"],"axis":[0,0,1],"distance":40}]},"edges":{"color":"#132232"}} moves the o1.2 subtree 40mm up. Steps may be "translate" (axis+distance), "rotate" (axis+origin+angleDeg), or "radial" (axis+center+distance); "targets" are occurrence-path prefixes; "amount" is the 0..1 scrub. Omit "steps" to auto-generate from hints: {"exploded":{"enabled":true,"auto":{"mode":"auto","gapScale":1.4,"depth":1}}} where mode is auto|x|y|z|radial. --camera accepts a preset, azimuth:elevation pair, or JSON object with preset, position, target, up, and zoom fields. --focus and --hide accept one or more selector refs such as #o1.2 for parts or subassemblies; pass the flag repeatedly or list refs after the flag. Option JSON is direct settings JSON, not a wrapped job fragment. Full JSON jobs use top-level appearance and display. Use --view-labels to burn the camera/view label into shortcut outputs. Use --params with STEP parameter sidecar JSON values, and --size-profile for default dimensions such as simple, diagnostic, labeled, assembly, presentation, orbit, or contact-sheet. Output file names are saved with a shared UTC seconds timestamp before the extension.
+Shortcut flags are for common STEP/STP snapshots. --job accepts one render job, an array of render jobs, or { "jobs": [...] }. Every job input must be a relative or absolute .step/.stp path, or a same-stem Python generator; direct GLB/STL/3MF/DXF/G-code/robot-description inputs are unsupported. The default appearance is the workbench saved theme. --appearance accepts a saved theme name, an inline JSON appearance settings object, or a JSON appearance settings file path. --display accepts solid, rendered, transparent, hidden_edges, hidden_lines_removed, unshaded, wireframe, an inline JSON display settings object, or a JSON display settings file path. Projection is a theme trait taken from the appearance (the default workbench/light theme is orthographic; the presentation stage themes are perspective); pass {"projection":"perspective"} in display JSON only to override it for a one-off. Exploded view and edge styling belong in display JSON. The exploded view is an ordered step document: {"mode":"rendered","exploded":{"enabled":true,"amount":1,"steps":[{"type":"translate","targets":["o1.2"],"axis":[0,0,1],"distance":40}]},"edges":{"color":"#132232"}} moves the o1.2 subtree 40mm up. Steps may be "translate" (axis+distance), "rotate" (axis+origin+angleDeg), or "radial" (axis+center+distance); "targets" are occurrence-path prefixes; "amount" is the 0..1 scrub. Omit "steps" to auto-generate from hints: {"exploded":{"enabled":true,"auto":{"mode":"auto","gapScale":1.4,"depth":1}}} where mode is auto|x|y|z|radial. --camera accepts a preset, azimuth:elevation pair, or JSON object with preset, position, target, up, and zoom fields. --focus and --hide accept one or more selector refs such as #o1.2 for parts or subassemblies; pass the flag repeatedly or list refs after the flag. Option JSON is direct settings JSON, not a wrapped job fragment. Full JSON jobs use top-level appearance and display. Use --view-labels to burn the camera/view label into shortcut outputs. Use --params with STEP parameter sidecar JSON values, and --size-profile for default dimensions such as simple, diagnostic, labeled, assembly, presentation, orbit, or contact-sheet. Output file names are saved with a shared UTC seconds timestamp before the extension. Use --debug (or a job-level "debug": true field) to add a "debug" section to --json output reporting how each STEP/STP artifact was resolved: source ("generated" from a .step.py generator vs. "imported" direct STEP), whether it was an assembly, whether it was served from cache or rebuilt, whether assembly selectors were re-extracted, and how long artifact resolution took. Everyday snapshot usage does not need --debug; it exists for diagnosing slow or unexpected renders.
 """
 
 
@@ -220,6 +221,8 @@ def parse_snapshot_args(argv: Sequence[str]) -> SnapshotOptions:
             raise SnapshotError("--socket has been removed; snapshot no longer uses a daemon")
         elif arg == "--view-labels":
             options.view_labels = True
+        elif arg == "--debug":
+            options.debug = True
         elif arg == "--job":
             options.job = parse_required_value(argv, index, arg)
             index += 1
@@ -441,6 +444,7 @@ def apply_option_overrides_to_job(job: object, options: SnapshotOptions, *, cwd:
     if not any(
         [
             options.view_labels,
+            options.debug,
             options.size_profile,
             options.params_specified,
             options.display_specified,
@@ -452,6 +456,8 @@ def apply_option_overrides_to_job(job: object, options: SnapshotOptions, *, cwd:
         return job
     next_job = copy.deepcopy(job)
     merge_focus_hide_options(next_job, options)
+    if options.debug:
+        next_job["debug"] = True
     if options.appearance_specified:
         next_job["appearance"] = load_appearance_option(options.appearance, cwd=cwd)
     if options.params_specified:
@@ -528,6 +534,8 @@ def load_job_from_options(
         job["display"] = load_display_option(options.display, cwd=resolved_cwd)
     if options.params_specified:
         job["stepParameters"] = parse_params_option(options.params)
+    if options.debug:
+        job["debug"] = True
     merge_focus_hide_options(job, options)
     return job
 
@@ -752,6 +760,7 @@ def ensure_render_job_step_artifact(
     input_path: Path,
     step_path: Path,
     require_selector: bool = False,
+    debug_info: dict[str, object] | None = None,
 ) -> StepTopologyArtifact:
     target = ResolvedStepTarget(
         cad_path=cad_ref_for_step_path(reference_root, step_path),
@@ -764,7 +773,12 @@ def ensure_render_job_step_artifact(
     )
     try:
         ensure_artifact = load_ensure_step_topology_artifact()
-        return ensure_artifact(target, owner="cad-snapshot", require_selector=require_selector)
+        return ensure_artifact(
+            target,
+            owner="cad-snapshot",
+            require_selector=require_selector,
+            debug=debug_info,
+        )
     except StepTopologyArtifactError as exc:
         raise SnapshotError(str(exc)) from exc
 
@@ -888,12 +902,15 @@ def resolve_render_job(
     if kind not in {"step", "stp"}:
         raise SnapshotError("Snapshot supports only STEP/STP inputs or same-stem Python generators")
 
+    debug_enabled = bool(job.get("debug"))
+    step_artifact_debug: dict[str, object] | None = {} if debug_enabled else None
     artifact = ensure_render_job_step_artifact(
         job,
         reference_root=reference_root,
         input_path=source_path,
         step_path=input_path,
         require_selector=selection_requires_selector_topology(job),
+        debug_info=step_artifact_debug,
     )
     expected_cad_path = cad_ref_for_step_path(reference_root, input_path)
     normalized_selection = normalize_render_job_selection(
@@ -981,6 +998,8 @@ def resolve_render_job(
     if step_parameter_path is not None and step_parameter_path.exists():
         resolved["stepParameterPath"] = str(step_parameter_path)
         resolved["stepParameterUrl"] = asset_url_for_path(step_parameter_path, root_path)
+    if debug_enabled:
+        resolved["debug"] = {"stepArtifact": step_artifact_debug}
 
     if normalized_selection is not None:
         job["selection"] = normalized_selection

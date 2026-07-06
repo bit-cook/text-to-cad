@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -42,12 +43,49 @@ def ensure_step_topology_artifact(
     mesh_tolerance: float | None = None,
     mesh_angular_tolerance: float | None = None,
     owner: str = "cadgen-step-artifact",
+    debug: dict[str, object] | None = None,
+) -> StepTopologyArtifact:
+    """Resolve (building/regenerating if needed) the render/topology artifact for `target`.
+
+    `debug`, when passed a dict, is filled in-place with which build strategy this call
+    took (generated vs. imported source, assembly vs. part, cache hit vs. regeneration,
+    whether assembly selectors were re-extracted, and wall-clock time) so callers can
+    surface it as opt-in diagnostics without adding overhead when `debug` is None."""
+    started = time.perf_counter() if debug is not None else None
+    try:
+        return _ensure_step_topology_artifact(
+            target,
+            artifact_path=artifact_path,
+            require_selector=require_selector,
+            force=force,
+            logger=logger,
+            mesh_tolerance=mesh_tolerance,
+            mesh_angular_tolerance=mesh_angular_tolerance,
+            debug=debug,
+        )
+    finally:
+        if debug is not None and started is not None:
+            debug["tookMs"] = (time.perf_counter() - started) * 1000
+
+
+def _ensure_step_topology_artifact(
+    target: ResolvedStepTarget,
+    *,
+    artifact_path: Path | None,
+    require_selector: bool,
+    force: bool,
+    logger: CliLogger | None,
+    mesh_tolerance: float | None,
+    mesh_angular_tolerance: float | None,
+    debug: dict[str, object] | None,
 ) -> StepTopologyArtifact:
     spec = _entry_spec_for_target(
         target,
         mesh_tolerance=mesh_tolerance,
         mesh_angular_tolerance=mesh_angular_tolerance,
     )
+    if debug is not None:
+        debug["source"] = spec.source
     resolved_artifact_path = artifact_path or render_package_dir(spec.entry_path)
 
     # The canonical render artifact for a generated assembly is a component-GLB package
@@ -56,10 +94,14 @@ def ensure_step_topology_artifact(
     # win is precisely that this 29.5s extraction is no longer in the build path).
     from cadgen._internal.component_package import is_assembly_package
 
-    if artifact_path is None and is_assembly_package(resolved_artifact_path):
+    is_assembly = artifact_path is None and is_assembly_package(resolved_artifact_path)
+    if debug is not None:
+        debug["assembly"] = is_assembly
+
+    if is_assembly:
         try:
             return _assembly_topology_artifact(
-                spec, require_selector=require_selector, logger=logger, force=force
+                spec, require_selector=require_selector, logger=logger, force=force, debug=debug
             )
         except StepTopologyArtifactError:
             raise
@@ -79,7 +121,12 @@ def ensure_step_topology_artifact(
     if not force:
         artifact = _current_artifact_for_spec(spec, artifact_path=resolved_artifact_path, require_selector=require_selector)
         if artifact is not None:
+            if debug is not None:
+                debug["cacheHit"] = True
             return artifact
+
+    if debug is not None:
+        debug["cacheHit"] = False
 
     try:
         spec, scene = _scene_for_regeneration(spec, logger=logger, force=force)
@@ -116,6 +163,7 @@ def ensure_step_topology_artifact(
             logger=logger,
             force=False,
             preloaded_scene=scene,
+            debug=debug,
         )
     return validate_step_topology_artifact(
         ResolvedStepTarget(
@@ -171,6 +219,7 @@ def _assembly_topology_artifact(
     logger: CliLogger | None,
     force: bool,
     preloaded_scene: LoadedStepScene | None = None,
+    debug: dict[str, object] | None = None,
 ) -> StepTopologyArtifact:
     """The topology artifact for a component-GLB package, which carries no embedded
     whole-assembly topology.
@@ -190,6 +239,9 @@ def _assembly_topology_artifact(
     descriptor = read_package_descriptor(render_package_dir(spec.entry_path))
     if not require_selector:
         if descriptor is not None:
+            if debug is not None:
+                debug["cacheHit"] = True
+                debug["selectorReextracted"] = False
             return StepTopologyArtifact(
                 cad_path=spec.cad_ref,
                 kind="assembly",
@@ -216,6 +268,9 @@ def _assembly_topology_artifact(
         if _topology_sidecar_matches_descriptor(cached_manifest, descriptor):
             bundle = read_step_topology_bundle_from_glb(topology_glb)
             if bundle is not None:
+                if debug is not None:
+                    debug["cacheHit"] = True
+                    debug["selectorReextracted"] = False
                 return StepTopologyArtifact(
                     cad_path=spec.cad_ref,
                     kind="assembly",
@@ -235,6 +290,12 @@ def _assembly_topology_artifact(
         extract_selectors_from_scene,
         mesh_step_scene,
     )
+
+    # Reached whenever selectors must be (re)extracted this call: neither the cached
+    # descriptor (no-selector path) nor the topology.glb sidecar could serve it.
+    if debug is not None:
+        debug["cacheHit"] = False
+        debug["selectorReextracted"] = True
 
     if preloaded_scene is not None:
         # The caller just ran gen_step for the package build; extracting
