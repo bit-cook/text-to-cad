@@ -484,6 +484,41 @@ class SnapshotCliTests(unittest.TestCase):
             {"stepArtifact": {"source": "generated", "assembly": False, "cacheHit": True, "tookMs": 1.5}},
         )
 
+    def test_debug_reaches_rendered_json_output(self) -> None:
+        """--debug diagnostics are attached at resolve time, but the printed result is the
+        browser's return value — the render stage must merge them in or the help text's
+        promised "debug" section never appears in --json output."""
+
+        class StubRenderer:
+            async def render(self, job):
+                return {"ok": True, "mode": "view", "outputs": []}
+
+            async def close(self):
+                return None
+
+        debug_payload = {"stepArtifact": {"source": "generated", "cacheHit": True, "tookMs": 1.5}}
+        job = {
+            "input": "models/part.step",
+            "resolved": {"debug": debug_payload},
+        }
+
+        result = asyncio.run(
+            snapshot_main.render_resolved_job_packet(
+                {"single": True, "jobs": [job]}, renderer=StubRenderer()
+            )
+        )
+        self.assertEqual(result["debug"], debug_payload)
+        stream = io.StringIO()
+        snapshot_main.print_render_result(result, json_output=True, stdout=stream)
+        self.assertEqual(json.loads(stream.getvalue())["debug"], debug_payload)
+
+        multi = asyncio.run(
+            snapshot_main.render_resolved_job_packet(
+                {"single": False, "jobs": [job]}, renderer=StubRenderer()
+            )
+        )
+        self.assertEqual(multi["jobs"][0]["debug"], debug_payload)
+
     def test_render_job_omits_debug_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory).resolve()

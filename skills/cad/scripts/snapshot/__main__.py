@@ -1375,6 +1375,13 @@ async def render_resolved_job_packet(packet: Mapping[str, object], *, renderer: 
     try:
         for job in packet["jobs"]:
             result = await snapshot_renderer.render(job)
+            # The browser result knows nothing about artifact resolution; --debug
+            # diagnostics are attached at resolve time, so merge them into the
+            # emitted result here or they never reach --json output.
+            resolved = job.get("resolved") if is_plain_object(job.get("resolved")) else {}
+            debug_info = resolved.get("debug")
+            if is_plain_object(debug_info) and is_plain_object(result):
+                result = {**result, "debug": debug_info}
             results.append(result if packet["single"] else {"input": job.get("input"), **result})
     finally:
         await snapshot_renderer.close()
