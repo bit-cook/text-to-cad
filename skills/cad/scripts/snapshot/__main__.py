@@ -59,6 +59,11 @@ SUPPORTED_RENDER_MODES = {"view", "orbit", "section", "list"}
 MESH_INPUT_KINDS = {"glb", "stl", "3mf"}
 MESH_SUPPORTED_RENDER_MODES = {"view", "orbit", "list"}
 TOPOLOGY_DISPLAY_MODES = {"hidden_edges", "hidden_lines_removed"}
+# Direct implicit CAD inputs (`.implicit.js` raymarch modules). These render through
+# the shared runtime's implicit backend, not the mesh/STEP path: no STEP topology,
+# no selectors, no stepParameters, no exploded/section, no CAD-edge display modes.
+IMPLICIT_INPUT_SUFFIX = ".implicit.js"
+IMPLICIT_SUPPORTED_RENDER_MODES = {"view", "orbit"}
 WORKBENCH_RENDER_THEME_IDS = {DEFAULT_RENDER_THEME_ID}
 
 SIMPLE_RENDER_WIDTH = 1200
@@ -170,7 +175,7 @@ def help_text() -> str:
   python scripts/snapshot --job -
   python scripts/snapshot --input models/part.step --output /tmp/part.png --appearance workbench
 
-Shortcut flags are for common STEP/STP snapshots. --job accepts one render job, an array of render jobs, or { "jobs": [...] }. Every job input must be a relative or absolute .step/.stp path, a same-stem Python generator, or a direct .glb/.stl/.3mf mesh; direct DXF/G-code/robot-description inputs are unsupported. Mesh inputs render shaded solid through the shared mesh path and support camera, display projection (orthographic/perspective), appearance, size-profile, orbit, and list output, but reject STEP-only options: --params/stepParameters, --focus/--hide selector refs, exploded and non-solid display modes, and section mode. The default appearance is the workbench saved theme. --appearance accepts a saved theme name, an inline JSON appearance settings object, or a JSON appearance settings file path. --display accepts solid, rendered, transparent, hidden_edges, hidden_lines_removed, unshaded, wireframe, an inline JSON display settings object, or a JSON display settings file path. Projection is a theme trait taken from the appearance (the default workbench/light theme is orthographic; the presentation stage themes are perspective); pass {"projection":"perspective"} in display JSON only to override it for a one-off. Exploded view and edge styling belong in display JSON. The exploded view is an ordered step document: {"mode":"rendered","exploded":{"enabled":true,"amount":1,"steps":[{"type":"translate","targets":["o1.2"],"axis":[0,0,1],"distance":40}]},"edges":{"color":"#132232"}} moves the o1.2 subtree 40mm up. Steps may be "translate" (axis+distance), "rotate" (axis+origin+angleDeg), or "radial" (axis+center+distance); "targets" are occurrence-path prefixes; "amount" is the 0..1 scrub. Omit "steps" to auto-generate from hints: {"exploded":{"enabled":true,"auto":{"mode":"auto","gapScale":1.4,"depth":1}}} where mode is auto|x|y|z|radial. --camera accepts a preset, azimuth:elevation pair, or JSON object with preset, position, target, up, and zoom fields. --focus and --hide accept one or more selector refs such as #o1.2 for parts or subassemblies; pass the flag repeatedly or list refs after the flag. Option JSON is direct settings JSON, not a wrapped job fragment. Full JSON jobs use top-level appearance and display. Use --view-labels to burn the camera/view label into shortcut outputs. Use --params with STEP parameter sidecar JSON values, and --size-profile for default dimensions such as simple, diagnostic, labeled, assembly, presentation, orbit, or contact-sheet. Output file names are saved with a shared UTC seconds timestamp before the extension. Use --debug (or a job-level "debug": true field) to add a "debug" section to --json output reporting how each STEP/STP artifact was resolved: source ("generated" from a .step.py generator vs. "imported" direct STEP), whether it was an assembly, whether it was served from cache or rebuilt, whether assembly selectors were re-extracted, and how long artifact resolution took. Everyday snapshot usage does not need --debug; it exists for diagnosing slow or unexpected renders.
+Shortcut flags are for common STEP/STP snapshots. --job accepts one render job, an array of render jobs, or { "jobs": [...] }. Every job input must be a relative or absolute .step/.stp path, a same-stem Python generator, a direct .glb/.stl/.3mf mesh, or a .implicit.js model; direct DXF/G-code/robot-description inputs are unsupported. Mesh inputs render shaded solid through the shared mesh path and support camera, display projection (orthographic/perspective), appearance, size-profile, orbit, and list output, but reject STEP-only options: --params/stepParameters, --focus/--hide selector refs, exploded and non-solid display modes, and section mode. Implicit (.implicit.js) inputs render through the shared runtime's raymarch backend and support camera, appearance, and orbit output; they reject the same STEP-only options plus list/section modes (no part topology). The default appearance is the workbench saved theme. --appearance accepts a saved theme name, an inline JSON appearance settings object, or a JSON appearance settings file path. --display accepts solid, rendered, transparent, hidden_edges, hidden_lines_removed, unshaded, wireframe, an inline JSON display settings object, or a JSON display settings file path. Projection is a theme trait taken from the appearance (the default workbench/light theme is orthographic; the presentation stage themes are perspective); pass {"projection":"perspective"} in display JSON only to override it for a one-off. Exploded view and edge styling belong in display JSON. The exploded view is an ordered step document: {"mode":"rendered","exploded":{"enabled":true,"amount":1,"steps":[{"type":"translate","targets":["o1.2"],"axis":[0,0,1],"distance":40}]},"edges":{"color":"#132232"}} moves the o1.2 subtree 40mm up. Steps may be "translate" (axis+distance), "rotate" (axis+origin+angleDeg), or "radial" (axis+center+distance); "targets" are occurrence-path prefixes; "amount" is the 0..1 scrub. Omit "steps" to auto-generate from hints: {"exploded":{"enabled":true,"auto":{"mode":"auto","gapScale":1.4,"depth":1}}} where mode is auto|x|y|z|radial. --camera accepts a preset, azimuth:elevation pair, or JSON object with preset, position, target, up, and zoom fields. --focus and --hide accept one or more selector refs such as #o1.2 for parts or subassemblies; pass the flag repeatedly or list refs after the flag. Option JSON is direct settings JSON, not a wrapped job fragment. Full JSON jobs use top-level appearance and display. Use --view-labels to burn the camera/view label into shortcut outputs. Use --params with STEP parameter sidecar JSON values, and --size-profile for default dimensions such as simple, diagnostic, labeled, assembly, presentation, orbit, or contact-sheet. Output file names are saved with a shared UTC seconds timestamp before the extension. Use --debug (or a job-level "debug": true field) to add a "debug" section to --json output reporting how each STEP/STP artifact was resolved: source ("generated" from a .step.py generator vs. "imported" direct STEP), whether it was an assembly, whether it was served from cache or rebuilt, whether assembly selectors were re-extracted, and how long artifact resolution took. Everyday snapshot usage does not need --debug; it exists for diagnosing slow or unexpected renders.
 """
 
 
@@ -598,6 +603,10 @@ def path_is_inside_or_equal(child: Path, parent: Path) -> bool:
 
 
 def input_kind(file_path: Path) -> str:
+    # `.implicit.js` is a compound suffix (Path.suffix sees only `.js`), so match
+    # the full name before the single-suffix checks below.
+    if file_path.name.lower().endswith(IMPLICIT_INPUT_SUFFIX):
+        return "implicit"
     suffix = file_path.suffix.lower()
     if suffix == ".step":
         return "step"
@@ -1054,6 +1063,76 @@ def resolve_mesh_render_job(
     return normalized
 
 
+def resolve_implicit_render_job(
+    job: dict[str, object],
+    *,
+    kind: str,
+    input_path: Path,
+    root_path: Path,
+    resolved_cwd: Path,
+    timestamp: str | None,
+    **_kind_context: object,
+) -> dict[str, object]:
+    """Resolve a direct implicit CAD input (`.implicit.js`).
+
+    Implicit models render through the shared runtime's raymarch backend, so this
+    skips the STEP artifact/package pipeline and hands the renderer the module URL.
+    STEP-only options are rejected up front with clear errors."""
+    # Selector focus/hide/refs need the selector index built from STEP topology.
+    if selection_filter_values(job):
+        raise SnapshotError(
+            "selection focus/hide/refs require STEP topology; implicit models have no "
+            "part/subassembly selectors"
+        )
+    # stepParameters drive a STEP parameter sidecar; implicit models carry their own descriptors.
+    if has_step_parameter_render_values(job.get("stepParameters")):
+        raise SnapshotError(
+            "stepParameters require a STEP model; implicit models are parameterized by their "
+            "own descriptor, not STEP sidecars"
+        )
+
+    mode = str(job.get("mode") or "view").strip().lower()
+    if mode not in SUPPORTED_RENDER_MODES:
+        raise SnapshotError(f"Unsupported render mode: {mode or '(missing)'}")
+    if mode not in IMPLICIT_SUPPORTED_RENDER_MODES:
+        supported = ", ".join(sorted(IMPLICIT_SUPPORTED_RENDER_MODES))
+        raise SnapshotError(
+            f"{mode} mode is not supported for implicit inputs; implicit models support: {supported}"
+        )
+
+    # Implicit rendering is raymarched shading — there is no CAD topology for
+    # wireframe/edges/exploded, so reject anything but the default solid shading.
+    display = job.get("display") if is_plain_object(job.get("display")) else {}
+    raw_display_mode = re.sub(r"[\s-]+", "_", str(display.get("mode") or "").strip().lower())
+    canonical_display_mode = DISPLAY_MODE_ALIASES.get(raw_display_mode, raw_display_mode)
+    if canonical_display_mode and canonical_display_mode != "solid":
+        raise SnapshotError(
+            f"{canonical_display_mode} display mode is not supported for implicit inputs; "
+            "implicit models render raymarched shading"
+        )
+    exploded = display.get("exploded") if is_plain_object(display.get("exploded")) else None
+    if exploded is not None and exploded.get("enabled"):
+        raise SnapshotError(
+            "exploded view requires STEP assembly occurrence structure; implicit models "
+            "cannot be exploded"
+        )
+
+    asset_url = asset_url_for_path(input_path, root_path)
+    resolved: dict[str, object] = {
+        "rootPath": str(root_path),
+        "inputPath": str(input_path),
+        "inputUrl": asset_url,
+        "kind": "implicit",
+        "url": asset_url,
+    }
+    if bool(job.get("debug")):
+        resolved["debug"] = {"implicitSource": {"kind": "implicit"}}
+
+    normalized = normalize_common_job(job, mode=mode, resolved_cwd=resolved_cwd, timestamp=timestamp)
+    normalized["resolved"] = resolved
+    return normalized
+
+
 def resolve_render_job(
     raw_job: object,
     *,
@@ -1097,7 +1176,7 @@ def resolve_render_job(
     if resolver is None:
         raise SnapshotError(
             "Snapshot supports STEP/STP inputs, same-stem Python generators, "
-            "or direct GLB/STL/3MF meshes"
+            "direct GLB/STL/3MF meshes, or .implicit.js models"
         )
     return resolver(
         job,
@@ -1205,6 +1284,7 @@ KIND_RESOLVERS: dict[str, Callable[..., dict[str, object]]] = {
     "glb": resolve_mesh_render_job,
     "stl": resolve_mesh_render_job,
     "3mf": resolve_mesh_render_job,
+    "implicit": resolve_implicit_render_job,
 }
 
 

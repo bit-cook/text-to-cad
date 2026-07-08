@@ -588,7 +588,8 @@ class SnapshotCliTests(unittest.TestCase):
                 snapshot_main.ensure_step_topology_artifact = fake_ensure
                 with self.assertRaisesRegex(
                     SnapshotError,
-                    "Snapshot supports STEP/STP inputs, same-stem Python generators, or direct GLB/STL/3MF meshes",
+                    "Snapshot supports STEP/STP inputs, same-stem Python generators, "
+                    "direct GLB/STL/3MF meshes, or .implicit.js models",
                 ):
                     resolve_render_job_packet(
                         {
@@ -772,6 +773,66 @@ class SnapshotCliTests(unittest.TestCase):
                 cwd=root,
             )
         self.assertEqual(packet["jobs"][0]["display"], {"mode": "solid", "projection": "orthographic"})
+
+    def test_input_kind_detects_implicit_modules(self) -> None:
+        self.assertEqual(snapshot_main.input_kind(Path("models/pulse.implicit.js")), "implicit")
+        # A plain .js file is not an implicit model and stays unsupported.
+        self.assertEqual(snapshot_main.input_kind(Path("models/helper.js")), "")
+
+    def test_render_job_resolves_implicit_module_without_step_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = self._mesh_job_env(temporary_directory, "pulse.implicit.js", b"export default {};\n")
+            calls = []
+
+            def fake_ensure(target, **kwargs):
+                calls.append(kwargs)
+                return None
+
+            original_ensure = snapshot_main.ensure_step_topology_artifact
+            try:
+                snapshot_main.ensure_step_topology_artifact = fake_ensure
+                packet = resolve_render_job_packet(
+                    {
+                        "input": "models/pulse.implicit.js",
+                        "outputs": [{"path": "tmp/iso.png", "camera": "iso"}],
+                    },
+                    cwd=root,
+                )
+            finally:
+                snapshot_main.ensure_step_topology_artifact = original_ensure
+
+        # Implicit inputs skip the STEP artifact pipeline entirely.
+        self.assertEqual(calls, [])
+        job = packet["jobs"][0]
+        resolved = job["resolved"]
+        self.assertEqual(resolved["kind"], "implicit")
+        self.assertTrue(str(resolved["inputUrl"]).endswith("pulse.implicit.js"))
+        self.assertEqual(resolved["inputUrl"], resolved["url"])
+
+    def test_render_job_supports_orbit_for_implicit_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = self._mesh_job_env(temporary_directory, "pulse.implicit.js", b"export default {};\n")
+            packet = resolve_render_job_packet(
+                {"input": "models/pulse.implicit.js", "mode": "orbit", "outputs": [{"path": "tmp/orbit.gif"}]},
+                cwd=root,
+            )
+        self.assertEqual(packet["jobs"][0]["mode"], "orbit")
+        self.assertEqual(packet["jobs"][0]["resolved"]["kind"], "implicit")
+
+    def test_render_job_rejects_step_only_options_for_implicit_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = self._mesh_job_env(temporary_directory, "pulse.implicit.js", b"export default {};\n")
+            base = {"input": "models/pulse.implicit.js", "outputs": [{"path": "tmp/iso.png", "camera": "iso"}]}
+            with self.assertRaisesRegex(SnapshotError, "list mode is not supported for implicit"):
+                resolve_render_job_packet({**base, "mode": "list", "outputs": []}, cwd=root)
+            with self.assertRaisesRegex(SnapshotError, "selection focus/hide/refs require STEP topology"):
+                resolve_render_job_packet({**base, "selection": {"focus": ["#o1.2"]}}, cwd=root)
+            with self.assertRaisesRegex(SnapshotError, "display mode is not supported for implicit"):
+                resolve_render_job_packet({**base, "display": {"mode": "wireframe"}}, cwd=root)
+            with self.assertRaisesRegex(SnapshotError, "exploded view requires STEP assembly"):
+                resolve_render_job_packet(
+                    {**base, "display": {"exploded": {"enabled": True, "axis": "z"}}}, cwd=root
+                )
 
     def test_render_job_missing_mesh_file_errors(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
