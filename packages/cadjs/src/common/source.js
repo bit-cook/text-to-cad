@@ -267,8 +267,17 @@ export async function loadSource(input, options = {}) {
     meshData = await loadMeshDataFromUrl(sourceIsStep(kind) ? glbUrl || url : url, kind);
   }
 
-  const selectorRuntime = inputObject.selectorRuntime || options.selectorRuntime || await loadSelectorRuntime(glbUrl || url, { cadPath });
-  const displayEdgeRuntime = inputObject.displayEdgeRuntime || options.displayEdgeRuntime || await loadDisplayEdgeRuntime(glbUrl || url);
+  // Selector/display-edge runtimes ride in STEP topology GLB extras. Direct mesh
+  // kinds have none, and loading them anyway re-downloads the mesh binary just to
+  // fail the GLB container parse — gate by kind so "no selectors for meshes" is
+  // intent, not a swallowed error (matches the CLI's mesh-input validation).
+  const stepSidecarsEnabled = sourceIsStep(kind);
+  const selectorRuntime = inputObject.selectorRuntime || options.selectorRuntime || (
+    stepSidecarsEnabled ? await loadSelectorRuntime(glbUrl || url, { cadPath }) : null
+  );
+  const displayEdgeRuntime = inputObject.displayEdgeRuntime || options.displayEdgeRuntime || (
+    stepSidecarsEnabled ? await loadDisplayEdgeRuntime(glbUrl || url) : null
+  );
   const stepParameterSource = await loadStepParameters({
     kind,
     stepParameters,

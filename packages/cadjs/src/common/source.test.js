@@ -126,6 +126,25 @@ test("loadSource builds mesh data from an STL url", async () => {
   }
 });
 
+test("loadSource fetches a direct mesh exactly once (no STEP sidecar loads)", async () => {
+  const originalFetch = globalThis.fetch;
+  const fetchedUrls = [];
+  globalThis.fetch = async (url) => {
+    fetchedUrls.push(String(url));
+    return new Response(binaryStlTriangle(), { status: 200 });
+  };
+  try {
+    const source = await loadSource("/models/part.stl");
+    // Selector/display-edge runtimes are STEP topology sidecars; loading them for a
+    // mesh kind re-downloads the binary just to fail the GLB parse. One fetch total.
+    assert.deepEqual(fetchedUrls, ["/models/part.stl"]);
+    assert.equal(source.selectorRuntime, null);
+    assert.equal(source.displayEdgeRuntime, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("loadSource surfaces STL fetch failures", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response("nope", { status: 404 });
