@@ -484,6 +484,27 @@ class SnapshotCliTests(unittest.TestCase):
             {"stepArtifact": {"source": "generated", "assembly": False, "cacheHit": True, "tookMs": 1.5}},
         )
 
+    def test_job_level_display_values_are_validated(self) -> None:
+        """A display object embedded in a full JSON job must hit the same closed-set
+        validation as the --display flag path, or a typo'd value silently renders
+        the default (the exact failure validate_display_settings_values exists for)."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory).resolve()
+            models = root / "models"
+            models.mkdir()
+            mesh_path = models / "part.stl"
+            mesh_path.write_bytes(b"solid part\nendsolid part\n")
+            job = {
+                "input": "models/part.stl",
+                "display": {"projection": "ortho"},
+                "outputs": [{"path": "tmp/iso.png", "camera": "iso"}],
+            }
+            with self.assertRaisesRegex(SnapshotError, "projection must be orthographic or perspective"):
+                resolve_render_job_packet(job, cwd=root)
+            job["display"] = {"projection": "orthographic"}
+            packet = resolve_render_job_packet(job, cwd=root)
+            self.assertEqual(packet["jobs"][0]["display"], {"projection": "orthographic"})
+
     def test_debug_reaches_rendered_json_output(self) -> None:
         """--debug diagnostics are attached at resolve time, but the printed result is the
         browser's return value — the render stage must merge them in or the help text's

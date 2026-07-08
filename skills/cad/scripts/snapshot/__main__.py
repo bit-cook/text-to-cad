@@ -1060,6 +1060,12 @@ def resolve_render_job(
     if not raw_input:
         raise SnapshotError("render job is missing input")
 
+    # Closed-set display values are validated for the --display flag path in
+    # load_display_option; a display object embedded in a full JSON job must get
+    # the same guard, or a typo'd projection/mode silently renders the default.
+    if is_plain_object(job.get("display")):
+        validate_display_settings_values(job["display"], source_label="job display")
+
     input_path = resolve_input_path(raw_input, cwd=resolved_cwd)
     root_path = input_path.parent.resolve()
     reference_root = reference_root_for_input(input_path, resolved_cwd)
