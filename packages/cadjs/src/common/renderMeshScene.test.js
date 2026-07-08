@@ -10,7 +10,8 @@ import {
   modelOptionsForRenderJob,
   projectedVisibleGeometryFrame,
   renderJobContext,
-  renderMeshJob
+  renderMeshJob,
+  resolveOutputCameraProjection
 } from "./renderMeshScene.js";
 
 function twoPartMeshData() {
@@ -151,4 +152,21 @@ test("projectedVisibleGeometryFrame fits actual vertices instead of sparse bound
   assert.equal(frame.centerY, 0);
   assert.equal(frame.spanX, 2);
   assert.equal(frame.spanY, 2);
+});
+
+test("output projection echo follows the per-output camera decision", () => {
+  const orthographicContext = { projection: "orthographic" };
+  // Named preset on an orthographic theme stays orthographic.
+  assert.equal(resolveOutputCameraProjection(orthographicContext, "iso"), "orthographic");
+  // An explicit-position camera forces the perspective camera even on an
+  // orthographic theme — the echo must say so.
+  assert.equal(
+    resolveOutputCameraProjection(orthographicContext, {
+      position: [120, -90, 60],
+      target: [0, 0, 0]
+    }),
+    "perspective"
+  );
+  // Perspective theme/display projection is perspective for any spec.
+  assert.equal(resolveOutputCameraProjection({ projection: "perspective" }, "iso"), "perspective");
 });

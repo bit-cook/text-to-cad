@@ -653,6 +653,23 @@ export function listRenderableParts(meshData) {
   });
 }
 
+// The camera used for an output is decided PER OUTPUT: the job/theme projection,
+// plus a forced perspective whenever that output's camera spec carries an explicit
+// position/target/up. Any projection echo must come from this same decision, or an
+// explicit-position camera on an orthographic theme gets reported as orthographic.
+export function resolveOutputCameraProjection(context, cameraSpec) {
+  const displayProjection = normalizeCameraProjection(
+    context?.projection,
+    CAMERA_PROJECTION.ORTHOGRAPHIC
+  );
+  const usePerspectiveCamera = displayProjection === CAMERA_PROJECTION.PERSPECTIVE ||
+    cameraSpecUsesPerspectiveProjection(cameraSpec, {
+      presets: RENDER_VIEW_PRESETS,
+      strict: true
+    });
+  return usePerspectiveCamera ? CAMERA_PROJECTION.PERSPECTIVE : CAMERA_PROJECTION.ORTHOGRAPHIC;
+}
+
 export function renderJobContext(meshData, job = {}) {
   const mode = String(job.mode || "view").trim().toLowerCase();
   const theme = resolveAppearance(job);
@@ -1025,15 +1042,8 @@ export async function captureModel(viewport, captureOptions = {}) {
     syncViewportTopologyDisplayEdges(viewport);
     syncScreenSpaceLineMaterialResolution(viewport.model.runtime.screenSpaceLineMaterials, width, height);
     const cameraSpec = output.camera || job.camera || "iso";
-    const displayProjection = normalizeCameraProjection(
-      context.projection,
-      CAMERA_PROJECTION.ORTHOGRAPHIC
-    );
-    const usePerspectiveCamera = displayProjection === CAMERA_PROJECTION.PERSPECTIVE ||
-      cameraSpecUsesPerspectiveProjection(cameraSpec, {
-      presets: RENDER_VIEW_PRESETS,
-      strict: true
-    });
+    const outputProjection = resolveOutputCameraProjection(context, cameraSpec);
+    const usePerspectiveCamera = outputProjection === CAMERA_PROJECTION.PERSPECTIVE;
     const cameraView = usePerspectiveCamera ? null : resolveView(cameraSpec);
     const resolvedCamera = usePerspectiveCamera
       ? fitPerspectiveCamera(viewport.perspectiveCamera, cameraSpec, lockedBounds || outputBounds, width, height, sceneScale)
@@ -1048,6 +1058,9 @@ export async function captureModel(viewport, captureOptions = {}) {
     renderedOutputs.push({
       path: String(output.path || ""),
       camera: resolvedCamera.name,
+      // Authoritative per-output echo: an explicit-position camera forces the
+      // perspective camera even on an orthographic theme.
+      projection: outputProjection,
       width,
       height,
       mimeType: "image/png",
@@ -1058,11 +1071,12 @@ export async function captureModel(viewport, captureOptions = {}) {
   return {
     ok: true,
     mode,
-    // Echo the display state actually applied — projection is the resolved camera
-    // projection (theme trait or explicit override), so an agent sees what was
-    // really rendered, including the forced solid mode for non-STEP meshes.
+    // Echo the display state actually applied. The job-level projection is the
+    // resolved theme/display projection; each rendered output additionally carries
+    // its own authoritative projection (explicit-position cameras force perspective
+    // per output, so outputs within one job can differ).
     displayMode: context.displayMode,
-    projection: context.projection ?? context.displaySettings?.projection ?? null,
+    projection: context.projection,
     outputs: renderedOutputs,
     timings: {
       sceneBuildMs,
