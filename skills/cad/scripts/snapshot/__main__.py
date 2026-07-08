@@ -9,7 +9,7 @@ import os
 import re
 import sys
 import time
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -918,6 +918,65 @@ def normalize_render_job_selection(
     return normalized
 
 
+def normalize_common_job(
+    job: dict[str, object],
+    *,
+    mode: str,
+    resolved_cwd: Path,
+    timestamp: str | None,
+) -> dict[str, object]:
+    """Kind-independent job normalization shared by every input kind: the outputs
+    guard, render clip-stripping + scene-scale coercion, timestamped output
+    resolution with per-output camera defaults, and the common return shape.
+    Kind resolvers run their capability checks first, then call this, so a
+    STEP/mesh/implicit job all normalize identically; the caller attaches its
+    kind-specific ``resolved`` payload to the returned job."""
+    outputs = job.get("outputs") if isinstance(job.get("outputs"), list) else []
+    if mode != "list" and not outputs:
+        raise SnapshotError("render job must include outputs for non-list modes")
+
+    normalized_render = dict(job.get("render") if is_plain_object(job.get("render")) else {})
+    normalized_render.pop("clip", None)
+    normalized_render.pop("clipSettings", None)
+    raw_scale = str(
+        normalized_render.get("scale")
+        or normalized_render.get("sceneScale")
+        or normalized_render.get("sceneScaleMode")
+        or job.get("scale")
+        or job.get("sceneScale")
+        or ""
+    ).strip().lower()
+    if raw_scale:
+        normalized_render["scale"] = "cad"
+
+    normalized_outputs: list[dict[str, object]] = []
+    resolved_timestamp = timestamp or snapshot_timestamp()
+    for output in outputs:
+        output_object = dict(output if is_plain_object(output) else {})
+        width, height = resolve_output_size({**job, "mode": mode}, output_object)
+        output_path = str(output_object.get("path") or "")
+        timestamped_output_path = timestamp_output_path(output_path, resolved_timestamp)
+        normalized_outputs.append(
+            {
+                **output_object,
+                "path": str((resolved_cwd / timestamped_output_path).resolve()) if timestamped_output_path else "",
+                "width": width,
+                "height": height,
+                "camera": output_object.get("camera") or job.get("camera") or "iso",
+            }
+        )
+
+    job.pop("clip", None)
+    job.pop("clipSettings", None)
+    return {
+        **job,
+        "mode": mode,
+        "display": job.get("display") if is_plain_object(job.get("display")) else {"mode": "solid"},
+        "render": normalized_render,
+        "outputs": normalized_outputs,
+    }
+
+
 def resolve_mesh_render_job(
     job: dict[str, object],
     *,
@@ -926,6 +985,7 @@ def resolve_mesh_render_job(
     root_path: Path,
     resolved_cwd: Path,
     timestamp: str | None,
+    **_kind_context: object,
 ) -> dict[str, object]:
     """Resolve a direct mesh input (GLB/STL/3MF) that carries no STEP topology.
 
@@ -978,41 +1038,6 @@ def resolve_mesh_render_job(
             "cannot be exploded"
         )
 
-    outputs = job.get("outputs") if isinstance(job.get("outputs"), list) else []
-    if mode != "list" and not outputs:
-        raise SnapshotError("render job must include outputs for non-list modes")
-
-    normalized_render = dict(job.get("render") if is_plain_object(job.get("render")) else {})
-    normalized_render.pop("clip", None)
-    normalized_render.pop("clipSettings", None)
-    raw_scale = str(
-        normalized_render.get("scale")
-        or normalized_render.get("sceneScale")
-        or normalized_render.get("sceneScaleMode")
-        or job.get("scale")
-        or job.get("sceneScale")
-        or ""
-    ).strip().lower()
-    if raw_scale:
-        normalized_render["scale"] = "cad"
-
-    normalized_outputs: list[dict[str, object]] = []
-    resolved_timestamp = timestamp or snapshot_timestamp()
-    for output in outputs:
-        output_object = dict(output if is_plain_object(output) else {})
-        width, height = resolve_output_size({**job, "mode": mode}, output_object)
-        output_path = str(output_object.get("path") or "")
-        timestamped_output_path = timestamp_output_path(output_path, resolved_timestamp)
-        normalized_outputs.append(
-            {
-                **output_object,
-                "path": str((resolved_cwd / timestamped_output_path).resolve()) if timestamped_output_path else "",
-                "width": width,
-                "height": height,
-                "camera": output_object.get("camera") or job.get("camera") or "iso",
-            }
-        )
-
     asset_url = asset_url_for_path(input_path, root_path)
     resolved: dict[str, object] = {
         "rootPath": str(root_path),
@@ -1024,16 +1049,9 @@ def resolve_mesh_render_job(
     if bool(job.get("debug")):
         resolved["debug"] = {"meshSource": {"kind": kind}}
 
-    job.pop("clip", None)
-    job.pop("clipSettings", None)
-    return {
-        **job,
-        "mode": mode,
-        "display": job.get("display") if is_plain_object(job.get("display")) else {"mode": "solid"},
-        "render": normalized_render,
-        "outputs": normalized_outputs,
-        "resolved": resolved,
-    }
+    normalized = normalize_common_job(job, mode=mode, resolved_cwd=resolved_cwd, timestamp=timestamp)
+    normalized["resolved"] = resolved
+    return normalized
 
 
 def resolve_render_job(
@@ -1075,21 +1093,36 @@ def resolve_render_job(
         input_path = logical_step_path_for_python_source(input_path)
         root_path = input_path.parent.resolve()
         kind = "step"
-    if kind in MESH_INPUT_KINDS:
-        return resolve_mesh_render_job(
-            job,
-            kind=kind,
-            input_path=input_path,
-            root_path=root_path,
-            resolved_cwd=resolved_cwd,
-            timestamp=timestamp,
-        )
-    if kind not in {"step", "stp"}:
+    resolver = KIND_RESOLVERS.get(kind)
+    if resolver is None:
         raise SnapshotError(
             "Snapshot supports STEP/STP inputs, same-stem Python generators, "
             "or direct GLB/STL/3MF meshes"
         )
+    return resolver(
+        job,
+        kind=kind,
+        input_path=input_path,
+        root_path=root_path,
+        source_path=source_path,
+        reference_root=reference_root,
+        resolved_cwd=resolved_cwd,
+        timestamp=timestamp,
+    )
 
+
+def resolve_step_render_job(
+    job: dict[str, object],
+    *,
+    kind: str,
+    input_path: Path,
+    root_path: Path,
+    source_path: Path,
+    reference_root: Path,
+    resolved_cwd: Path,
+    timestamp: str | None,
+    **_kind_context: object,
+) -> dict[str, object]:
     debug_enabled = bool(job.get("debug"))
     step_artifact_debug: dict[str, object] | None = {} if debug_enabled else None
     artifact = ensure_render_job_step_artifact(
@@ -1129,44 +1162,9 @@ def resolve_render_job(
         )
 
     outputs = job.get("outputs") if isinstance(job.get("outputs"), list) else []
-    if mode != "list" and not outputs:
-        raise SnapshotError("render job must include outputs for non-list modes")
     if animated_params and len(outputs) != 1:
         raise SnapshotError("animated stepParameters require exactly one output")
 
-    normalized_render = dict(job.get("render") if is_plain_object(job.get("render")) else {})
-    normalized_render.pop("clip", None)
-    normalized_render.pop("clipSettings", None)
-    raw_scale = str(
-        normalized_render.get("scale")
-        or normalized_render.get("sceneScale")
-        or normalized_render.get("sceneScaleMode")
-        or job.get("scale")
-        or job.get("sceneScale")
-        or ""
-    ).strip().lower()
-    if raw_scale:
-        normalized_render["scale"] = "cad"
-
-    normalized_outputs: list[dict[str, object]] = []
-    resolved_timestamp = timestamp or snapshot_timestamp()
-    for output in outputs:
-        output_object = dict(output if is_plain_object(output) else {})
-        width, height = resolve_output_size({**job, "mode": mode}, output_object)
-        output_path = str(output_object.get("path") or "")
-        timestamped_output_path = timestamp_output_path(output_path, resolved_timestamp)
-        normalized_outputs.append(
-            {
-                **output_object,
-                "path": str((resolved_cwd / timestamped_output_path).resolve()) if timestamped_output_path else "",
-                "width": width,
-                "height": height,
-                "camera": output_object.get("camera") or job.get("camera") or "iso",
-            }
-        )
-
-    job.pop("clip", None)
-    job.pop("clipSettings", None)
     resolved: dict[str, object] = {
         "rootPath": str(root_path),
         "inputPath": str(input_path),
@@ -1192,14 +1190,22 @@ def resolve_render_job(
     if normalized_selection is not None:
         job["selection"] = normalized_selection
 
-    return {
-        **job,
-        "mode": mode,
-        "display": job.get("display") if is_plain_object(job.get("display")) else {"mode": "solid"},
-        "render": normalized_render,
-        "outputs": normalized_outputs,
-        "resolved": resolved,
-    }
+    normalized = normalize_common_job(job, mode=mode, resolved_cwd=resolved_cwd, timestamp=timestamp)
+    normalized["resolved"] = resolved
+    return normalized
+
+
+# Kind dispatch for render-job resolution. Every resolver takes the same
+# signature (job plus the resolved input-kind context) and returns the common
+# normalized job shape with a kind-specific ``resolved`` payload — adding a new
+# input kind is one table entry, not another if-chain arm plus a copied tail.
+KIND_RESOLVERS: dict[str, Callable[..., dict[str, object]]] = {
+    "step": resolve_step_render_job,
+    "stp": resolve_step_render_job,
+    "glb": resolve_mesh_render_job,
+    "stl": resolve_mesh_render_job,
+    "3mf": resolve_mesh_render_job,
+}
 
 
 def resolve_render_job_packet(raw_payload: object, *, cwd: Path | None = None) -> dict[str, object]:
