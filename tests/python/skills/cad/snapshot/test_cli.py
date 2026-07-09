@@ -231,6 +231,46 @@ class SnapshotCliTests(unittest.TestCase):
         self.assertEqual(self._display_job('{"mode":""}')["display"], {"mode": ""})
         self.assertEqual(self._display_job('{"exploded":{"axis":""}}')["display"], {"exploded": {"axis": ""}})
 
+    def test_display_json_rejects_bad_exploded_auto_mode_value(self) -> None:
+        # auto.mode is the field the renderer actually reads for auto-explode; a typo there
+        # silently renders the auto-picked axis (the exact wrong-image case the guard prevents).
+        with self.assertRaisesRegex(SnapshotError, "exploded.auto.mode must be one of auto, x, y, z, radial"):
+            self._display_job('{"exploded":{"auto":{"mode":"radal"}}}')
+        # A '-'-prefixed x/y/z is not a valid auto.mode (the renderer defaults it to "auto").
+        with self.assertRaisesRegex(SnapshotError, "exploded.auto.mode must be one of"):
+            self._display_job('{"exploded":{"auto":{"mode":"-z"}}}')
+
+    def test_display_json_accepts_valid_exploded_auto_mode(self) -> None:
+        for mode in ("auto", "x", "y", "z", "radial"):
+            self.assertEqual(
+                self._display_job('{"exploded":{"auto":{"mode":"%s"}}}' % mode)["display"],
+                {"exploded": {"auto": {"mode": mode}}},
+            )
+        # auto.axis is an accepted alias for auto.mode; an empty value is treated as unset.
+        self.assertEqual(
+            self._display_job('{"exploded":{"auto":{"axis":"radial"}}}')["display"],
+            {"exploded": {"auto": {"axis": "radial"}}},
+        )
+        self.assertEqual(
+            self._display_job('{"exploded":{"auto":{"mode":""}}}')["display"],
+            {"exploded": {"auto": {"mode": ""}}},
+        )
+
+    def test_exploded_axis_shorthand_translates_to_auto_mode(self) -> None:
+        # The CLI's top-level exploded.axis shorthand must reach the renderer as auto.mode
+        # (normalizeExplodedViewDocument drops a top-level axis), else it silently no-ops.
+        job = {"display": {"exploded": {"enabled": True, "axis": "z"}}}
+        snapshot_main.normalize_exploded_axis_shorthand(job)
+        self.assertEqual(job["display"]["exploded"]["auto"], {"mode": "z"})
+        # An explicit auto.mode wins over the shorthand (never silently overridden).
+        job_explicit = {"display": {"exploded": {"enabled": True, "axis": "z", "auto": {"mode": "radial"}}}}
+        snapshot_main.normalize_exploded_axis_shorthand(job_explicit)
+        self.assertEqual(job_explicit["display"]["exploded"]["auto"], {"mode": "radial"})
+        # No shorthand -> no spurious auto hint injected.
+        job_none = {"display": {"exploded": {"enabled": True}}}
+        snapshot_main.normalize_exploded_axis_shorthand(job_none)
+        self.assertNotIn("auto", job_none["display"]["exploded"])
+
     def test_edge_settings_belong_to_display_json(self) -> None:
         options = parse_snapshot_args(
             [
@@ -668,6 +708,32 @@ class SnapshotCliTests(unittest.TestCase):
             )
         self.assertEqual(packet["jobs"][0]["resolved"]["kind"], "3mf")
 
+    def test_render_job_surfaces_mesh_source_debug_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = self._mesh_job_env(temporary_directory, "part.stl", b"solid test\nendsolid test\n")
+            packet = resolve_render_job_packet(
+                {
+                    "input": "models/part.stl",
+                    "debug": True,
+                    "outputs": [{"path": "tmp/iso.png", "camera": "iso"}],
+                },
+                cwd=root,
+            )
+        self.assertEqual(packet["jobs"][0]["resolved"]["debug"], {"meshSource": {"kind": "stl"}})
+
+    def test_render_job_surfaces_implicit_source_debug_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = self._mesh_job_env(temporary_directory, "pulse.implicit.js", b"export default {};\n")
+            packet = resolve_render_job_packet(
+                {
+                    "input": "models/pulse.implicit.js",
+                    "debug": True,
+                    "outputs": [{"path": "tmp/iso.png", "camera": "iso"}],
+                },
+                cwd=root,
+            )
+        self.assertEqual(packet["jobs"][0]["resolved"]["debug"], {"implicitSource": {"kind": "implicit"}})
+
     def test_render_job_rejects_selection_for_mesh_input(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = self._mesh_job_env(temporary_directory, "widget.glb", b"glTF")
@@ -833,6 +899,11 @@ class SnapshotCliTests(unittest.TestCase):
                 resolve_render_job_packet(
                     {**base, "display": {"exploded": {"enabled": True, "axis": "z"}}}, cwd=root
                 )
+            # stepParameters and section mode are STEP-only for implicit inputs too.
+            with self.assertRaisesRegex(SnapshotError, "stepParameters require a STEP model"):
+                resolve_render_job_packet({**base, "stepParameters": {"width": 5}}, cwd=root)
+            with self.assertRaisesRegex(SnapshotError, "section mode is not supported for implicit"):
+                resolve_render_job_packet({**base, "mode": "section"}, cwd=root)
 
     def test_render_job_missing_mesh_file_errors(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
